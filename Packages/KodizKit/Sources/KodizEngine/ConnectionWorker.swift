@@ -3,15 +3,14 @@ import Foundation
 public protocol ConnectionWorkerDelegate: AnyObject, Sendable {
     func workerDidReceiveBytes(workerId: Int, segmentIdx: Int, count: Int64, speed: Double) async
     func workerDidCompleteSegment(workerId: Int, segmentIdx: Int) async
-    func workerDidFail(workerId: Int, segmentIdx: Int, error: Error) async
 }
 
 public actor ConnectionWorker {
     public let workerId: Int
-    private let session: URLSession
+    private var session: URLSession?
+    private var activeDataTask: URLSessionDataTask?
     private weak var delegate: ConnectionWorkerDelegate?
     private var isCancelled: Bool = false
-    private var activeTask: Task<Void, Never>?
 
     // EWMA speed tracking
     private var ewmaSpeed: Double = 0.0
@@ -22,15 +21,17 @@ public actor ConnectionWorker {
     public init(workerId: Int, delegate: ConnectionWorkerDelegate? = nil) {
         self.workerId = workerId
         self.delegate = delegate
+    }
 
-        // Ephemeral URLSession isolated per worker to ensure independent TCP connections
+    private func createSession(delegate: URLSessionDataDelegate) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        config.timeoutIntervalForRequest = 15.0
-        config.timeoutIntervalForResource = 60.0
-        self.session = URLSession(configuration: config)
+        // E2 fix: 30s idle request timeout, very long resource timeout (7 days)
+        config.timeoutIntervalForRequest = 30.0
+        config.timeoutIntervalForResource = 604800.0 // 7 days
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
     public func downloadSegment(
@@ -38,84 +39,163 @@ public actor ConnectionWorker {
         url: URL,
         fileWriter: FileWriter,
         planner: SegmentPlanner,
-        userAgent: String?,
-        referer: String?,
-        cookies: [String: String]?,
-        extraHeaders: [String: String]?,
+        options: DownloadRequestOptions,
         etag: String?,
-        lastModified: String?
-    ) async {
+        lastModified: String?,
+        rateLimiter: RateLimiter? = nil,
+        isSingleStream: Bool = false
+    ) async throws {
         self.isCancelled = false
         var currentOffset = segment.start + segment.received
-        let targetEnd = segment.end
+        var targetEnd = segment.end
 
-        // If segment is already complete
-        if targetEnd > 0 && currentOffset > targetEnd {
-            await delegate?.workerDidCompleteSegment(workerId: workerId, segmentIdx: segment.idx)
+        // Segment already complete
+        if targetEnd >= 0 && currentOffset > targetEnd {
             return
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        // E8 & plan fix: Mandatory identity encoding to prevent URLSession auto-decompression
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
 
-        // Range header
-        if targetEnd > 0 {
-            request.setValue("bytes=\(currentOffset)-\(targetEnd)", forHTTPHeaderField: "Range")
-        } else if currentOffset > 0 {
-            request.setValue("bytes=\(currentOffset)-", forHTTPHeaderField: "Range")
+        // Range header (only if not in pure single stream mode without range)
+        if !isSingleStream {
+            if targetEnd >= 0 {
+                request.setValue("bytes=\(currentOffset)-\(targetEnd)", forHTTPHeaderField: "Range")
+            } else if currentOffset > 0 {
+                request.setValue("bytes=\(currentOffset)-", forHTTPHeaderField: "Range")
+            }
+
+            // If-Range header for resume validation
+            if let etag = etag {
+                request.setValue(etag, forHTTPHeaderField: "If-Range")
+            } else if let lastMod = lastModified {
+                request.setValue(lastMod, forHTTPHeaderField: "If-Range")
+            }
         }
 
-        // If-Range header for resume validation
-        if let etag = etag {
-            request.setValue(etag, forHTTPHeaderField: "If-Range")
-        } else if let lastMod = lastModified {
-            request.setValue(lastMod, forHTTPHeaderField: "If-Range")
-        }
-
-        if let ua = userAgent {
+        // Headers from options
+        if let ua = options.userAgent {
             request.setValue(ua, forHTTPHeaderField: "User-Agent")
+        } else {
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
         }
 
-        if let ref = referer {
+        if let ref = options.referer {
             request.setValue(ref, forHTTPHeaderField: "Referer")
         }
 
-        if let cookies = cookies, !cookies.isEmpty {
-            let cookieStr = cookies.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
-            request.setValue(cookieStr, forHTTPHeaderField: "Cookie")
+        if let cookieHeader = options.cookieHeader(for: url) {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
 
-        if let extra = extraHeaders {
-            for (k, v) in extra {
-                request.setValue(v, forHTTPHeaderField: k)
+        for (k, v) in options.extraHeaders {
+            request.setValue(v, forHTTPHeaderField: k)
+        }
+
+        let sessionDelegate = WorkerDataDelegate()
+        let session = createSession(delegate: sessionDelegate)
+        self.session = session
+
+        let (stream, response) = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(AsyncThrowingStream<Data, Error>, HTTPURLResponse), Error>) in
+            sessionDelegate.start(request: request, session: session, continuation: continuation)
+        }
+
+        self.activeDataTask = sessionDelegate.dataTask
+
+        // E4 Response Validation
+        let statusCode = response.statusCode
+
+        if !isSingleStream {
+            if statusCode == 200 {
+                // If If-Range was provided and 200 received -> server file changed!
+                if etag != nil || lastModified != nil {
+                    session.invalidateAndCancel()
+                    throw DownloadError.fileChanged
+                } else {
+                    // Range was requested but server returned 200 OK
+                    // Do NOT write body into segment offset!
+                    session.invalidateAndCancel()
+                    throw DownloadError.serverDoesNotSupportRange
+                }
+            }
+
+            guard statusCode == 206 else {
+                session.invalidateAndCancel()
+                throw mapHTTPError(response: response)
+            }
+
+            // Verify Content-Range header
+            if let cr = response.value(forHTTPHeaderField: "Content-Range") {
+                if let rangeSpec = cr.split(separator: " ").last,
+                   let byteRange = rangeSpec.split(separator: "/").first {
+                    let parts = byteRange.split(separator: "-")
+                    if let startStr = parts.first, let startOffset = Int64(startStr) {
+                        if startOffset != currentOffset {
+                            session.invalidateAndCancel()
+                            throw DownloadError.badServerResponse("Content-Range start \(startOffset) does not match requested offset \(currentOffset)")
+                        }
+                    }
+                }
+            }
+        } else {
+            // Single stream mode
+            guard statusCode == 200 || statusCode == 206 else {
+                session.invalidateAndCancel()
+                throw mapHTTPError(response: response)
             }
         }
+
+        // Buffer: accumulate in 1 MiB chunks
+        let bufferCapacity = 1024 * 1024 // 1 MiB
+        var buffer = Data()
+        buffer.reserveCapacity(bufferCapacity)
+
+        lastSpeedCalcTime = Date()
+        bytesSinceLastCalc = 0
+
+        var reachedBoundary = false
 
         do {
-            let (asyncBytes, response) = try await session.bytes(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw URLError(.badServerResponse)
-            }
-
-            guard httpResponse.statusCode == 200 || httpResponse.statusCode == 206 else {
-                throw URLError(URLError.Code(rawValue: httpResponse.statusCode))
-            }
-
-            var buffer = Data()
-            buffer.reserveCapacity(64 * 1024)
-
-            lastSpeedCalcTime = Date()
-            bytesSinceLastCalc = 0
-
-            for try await byte in asyncBytes {
+            for try await chunk in stream {
                 if isCancelled { break }
 
-                buffer.append(byte)
-                currentOffset += 1
-                bytesSinceLastCalc += 1
+                // Check work-stealing boundary (cheap query, does not copy segment array)
+                if let currentEnd = await planner.getSegmentEnd(segmentIdx: segment.idx) {
+                    targetEnd = currentEnd
+                }
 
-                if buffer.count >= 64 * 1024 {
+                var chunkData = chunk
+
+                // If segment has a defined end boundary, check if this chunk crosses it
+                if targetEnd >= 0 {
+                    let bytesRemainingInSegment = (targetEnd - currentOffset + 1)
+                    if bytesRemainingInSegment <= 0 {
+                        reachedBoundary = true
+                        break
+                    }
+
+                    if Int64(chunkData.count) > bytesRemainingInSegment {
+                        // Trim excess bytes stolen by another worker
+                        chunkData = chunkData.prefix(Int(bytesRemainingInSegment))
+                        reachedBoundary = true
+                    }
+                }
+
+                buffer.append(chunkData)
+                currentOffset += Int64(chunkData.count)
+                bytesSinceLastCalc += Int64(chunkData.count)
+
+                // Write when buffer is full (1 MiB)
+                if buffer.count >= bufferCapacity {
+                    // Backpressure check: suspend data task while writing if needed
+                    sessionDelegate.dataTask?.suspend()
+
+                    if let limiter = rateLimiter {
+                        await limiter.acquire(bytes: Int64(buffer.count))
+                    }
+
                     let writeOffset = currentOffset - Int64(buffer.count)
                     try await fileWriter.write(data: buffer, at: writeOffset)
                     await planner.updateProgress(segmentIdx: segment.idx, additionalBytes: Int64(buffer.count))
@@ -129,22 +209,25 @@ public actor ConnectionWorker {
                     )
 
                     buffer.removeAll(keepingCapacity: true)
+                    sessionDelegate.dataTask?.resume()
                 }
 
-                // Check if segment end was dynamically shrunk by work-stealing
-                let activeSegments = await planner.segments
-                if let updatedSeg = activeSegments.first(where: { $0.idx == segment.idx }) {
-                    if updatedSeg.end > 0 && currentOffset > updatedSeg.end {
-                        break
-                    }
+                if reachedBoundary {
+                    sessionDelegate.dataTask?.cancel()
+                    break
                 }
             }
 
             // Flush remaining buffer
-            if !buffer.isEmpty {
+            if !buffer.isEmpty && !isCancelled {
+                if let limiter = rateLimiter {
+                    await limiter.acquire(bytes: Int64(buffer.count))
+                }
+
                 let writeOffset = currentOffset - Int64(buffer.count)
                 try await fileWriter.write(data: buffer, at: writeOffset)
                 await planner.updateProgress(segmentIdx: segment.idx, additionalBytes: Int64(buffer.count))
+
                 updateSpeed()
                 await delegate?.workerDidReceiveBytes(
                     workerId: workerId,
@@ -152,24 +235,39 @@ public actor ConnectionWorker {
                     count: Int64(buffer.count),
                     speed: ewmaSpeed
                 )
+                buffer.removeAll(keepingCapacity: false)
             }
 
+            session.finishTasksAndInvalidate()
+            self.session = nil
+            self.activeDataTask = nil
+
             if !isCancelled {
-                await planner.markCompleted(segmentIdx: segment.idx)
                 await delegate?.workerDidCompleteSegment(workerId: workerId, segmentIdx: segment.idx)
             }
         } catch {
-            if !isCancelled {
-                await planner.markFailed(segmentIdx: segment.idx)
-                await delegate?.workerDidFail(workerId: workerId, segmentIdx: segment.idx, error: error)
-            }
+            session.invalidateAndCancel()
+            self.session = nil
+            self.activeDataTask = nil
+            throw error
+        }
+    }
+
+    private func mapHTTPError(response: HTTPURLResponse) -> DownloadError {
+        switch response.statusCode {
+        case 404: return .resourceNotFound
+        case 410: return .gone
+        case 401: return .unauthorized
+        case 403: return .forbidden
+        case 416: return .rangeNotSatisfiable
+        default: return .serverError(statusCode: response.statusCode)
         }
     }
 
     private func updateSpeed() {
         let now = Date()
         let elapsed = now.timeIntervalSince(lastSpeedCalcTime)
-        if elapsed >= 0.5 {
+        if elapsed >= 0.25 {
             let instantaneous = Double(bytesSinceLastCalc) / elapsed
             ewmaSpeed = (alpha * instantaneous) + ((1.0 - alpha) * ewmaSpeed)
             lastSpeedCalcTime = now
@@ -179,6 +277,89 @@ public actor ConnectionWorker {
 
     public func cancel() {
         self.isCancelled = true
-        session.invalidateAndCancel()
+        activeDataTask?.cancel()
+        session?.invalidateAndCancel()
+        session = nil
+        activeDataTask = nil
+    }
+}
+
+// MARK: - WorkerDataDelegate
+
+private final class WorkerDataDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var responseContinuation: CheckedContinuation<(AsyncThrowingStream<Data, Error>, HTTPURLResponse), Error>?
+    private var streamContinuation: AsyncThrowingStream<Data, Error>.Continuation?
+    public var dataTask: URLSessionDataTask?
+
+    func start(
+        request: URLRequest,
+        session: URLSession,
+        continuation: CheckedContinuation<(AsyncThrowingStream<Data, Error>, HTTPURLResponse), Error>
+    ) {
+        lock.lock()
+        self.responseContinuation = continuation
+        lock.unlock()
+
+        let task = session.dataTask(with: request)
+        self.dataTask = task
+        task.resume()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            resumeResponseWithError(URLError(.badServerResponse))
+            completionHandler(.cancel)
+            return
+        }
+
+        lock.lock()
+        let stream = AsyncThrowingStream<Data, Error> { continuation in
+            self.streamContinuation = continuation
+        }
+
+        if let cont = responseContinuation {
+            responseContinuation = nil
+            lock.unlock()
+            cont.resume(returning: (stream, httpResponse))
+        } else {
+            lock.unlock()
+        }
+
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        let cont = streamContinuation
+        lock.unlock()
+        cont?.yield(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let respCont = responseContinuation
+        responseContinuation = nil
+        let streamCont = streamContinuation
+        streamContinuation = nil
+        lock.unlock()
+
+        if let error = error {
+            if let respCont = respCont {
+                respCont.resume(throwing: error)
+            } else {
+                streamCont?.finish(throwing: error)
+            }
+        } else {
+            streamCont?.finish()
+        }
+    }
+
+    private func resumeResponseWithError(_ error: Error) {
+        lock.lock()
+        let cont = responseContinuation
+        responseContinuation = nil
+        lock.unlock()
+        cont?.resume(throwing: error)
     }
 }

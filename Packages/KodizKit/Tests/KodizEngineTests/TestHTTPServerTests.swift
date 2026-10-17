@@ -168,15 +168,19 @@ final class TestHTTPServerTests: XCTestCase {
         let (_, resp1) = try await URLSession.shared.data(for: URLRequest(url: url))
         XCTAssertEqual((resp1 as? HTTPURLResponse)?.value(forHTTPHeaderField: "ETag"), "\"etag-v1\"")
 
-        // 2nd request with If-Range: "etag-v1" -> server detects change to "etag-v2" and returns 200 OK + full body!
-        var req2 = URLRequest(url: url)
-        req2.setValue("bytes=500-1023", forHTTPHeaderField: "Range")
-        req2.setValue("\"etag-v1\"", forHTTPHeaderField: "If-Range")
+        // 2nd request -> still "etag-v1" (changes after 2nd request)
+        let (_, resp2) = try await URLSession.shared.data(for: URLRequest(url: url))
+        XCTAssertEqual((resp2 as? HTTPURLResponse)?.value(forHTTPHeaderField: "ETag"), "\"etag-v1\"")
 
-        let (data2, resp2) = try await URLSession.shared.data(for: req2)
-        let http2 = resp2 as? HTTPURLResponse
-        XCTAssertEqual(http2?.statusCode, 200, "If-Range mismatch must return 200 OK according to RFC 7233")
-        XCTAssertEqual(http2?.value(forHTTPHeaderField: "ETag"), "\"etag-v2\"")
-        XCTAssertEqual(data2.count, 1024, "Full body of new representation must be returned")
+        // 3rd request with If-Range: "etag-v1" -> server detects change to "etag-v2" and returns 200 OK + full body!
+        var req3 = URLRequest(url: url)
+        req3.setValue("bytes=500-1023", forHTTPHeaderField: "Range")
+        req3.setValue("\"etag-v1\"", forHTTPHeaderField: "If-Range")
+
+        let (data3, resp3) = try await URLSession.shared.data(for: req3)
+        let http3 = resp3 as? HTTPURLResponse
+        XCTAssertEqual(http3?.statusCode, 200, "If-Range mismatch must return 200 OK according to RFC 7233")
+        XCTAssertEqual(http3?.value(forHTTPHeaderField: "ETag"), "\"etag-v2\"")
+        XCTAssertEqual(data3.count, 1024, "Full body of new representation must be returned")
     }
 }

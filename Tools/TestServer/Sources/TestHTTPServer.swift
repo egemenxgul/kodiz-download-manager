@@ -719,7 +719,12 @@ public final class TestHTTPServer: @unchecked Sendable {
             headerStr += "Connection: keep-alive\r\n\r\n"
         }
 
-        connection.send(content: Data(headerStr.utf8), completion: .contentProcessed { _ in })
+        let headerSuccess: Bool = await withCheckedContinuation { cont in
+            connection.send(content: Data(headerStr.utf8), completion: .contentProcessed { err in
+                cont.resume(returning: err == nil)
+            })
+        }
+        guard headerSuccess else { return }
 
         let chunkSize = 64 * 1024
         var sent = 0
@@ -727,16 +732,22 @@ public final class TestHTTPServer: @unchecked Sendable {
         while sent < totalBytesToSend {
             let count = min(chunkSize, totalBytesToSend - sent)
             let chunk = DeterministicData.generateChunk(offset: offset + Int64(sent), count: count, seed: seed)
-            await stats.addBytesServed(Int64(count))
 
             let isLast = (sent + count >= totalBytesToSend)
-            if isLast && closeAtEnd {
-                connection.send(content: chunk, completion: .contentProcessed { _ in
-                    connection.cancel()
+            let sendSuccess: Bool = await withCheckedContinuation { cont in
+                connection.send(content: chunk, completion: .contentProcessed { err in
+                    if isLast && closeAtEnd {
+                        connection.cancel()
+                    }
+                    cont.resume(returning: err == nil)
                 })
-            } else {
-                connection.send(content: chunk, completion: .contentProcessed { _ in })
             }
+
+            if !sendSuccess {
+                break
+            }
+
+            await stats.addBytesServed(Int64(count))
             sent += count
         }
 

@@ -90,6 +90,12 @@ public actor FileWriter {
         }
     }
 
+    /// Deletes the temporary .kodizpart file (called upon cancel)
+    public func deleteTempFile() {
+        closeWithoutFinalizing()
+        try? FileManager.default.removeItem(at: tempURL)
+    }
+
     deinit {
         if fileDescriptor >= 0 {
             Darwin.close(fileDescriptor)

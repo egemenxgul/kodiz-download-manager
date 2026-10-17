@@ -38,55 +38,52 @@ public struct ProbeResult: Sendable {
 }
 
 public actor DownloadProbe {
-    private let urlSession: URLSession
-
-    public init() {
-        let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = nil
-        config.httpShouldSetCookies = false
-        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        config.timeoutIntervalForRequest = 15.0
-        config.timeoutIntervalForResource = 30.0
-        self.urlSession = URLSession(configuration: config)
-    }
+    public init() {}
 
     public func probe(
         url: URL,
-        userAgent: String? = nil,
-        referer: String? = nil,
-        cookies: [String: String]? = nil,
-        extraHeaders: [String: String]? = nil
+        options: DownloadRequestOptions? = nil
     ) async throws -> ProbeResult {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
 
-        if let ua = userAgent {
+        let opts = options ?? DownloadRequestOptions()
+
+        if let ua = opts.userAgent {
             request.setValue(ua, forHTTPHeaderField: "User-Agent")
         } else {
             request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15", forHTTPHeaderField: "User-Agent")
         }
 
-        if let ref = referer {
+        if let ref = opts.referer {
             request.setValue(ref, forHTTPHeaderField: "Referer")
         }
 
-        if let cookies = cookies, !cookies.isEmpty {
-            let cookieHeader = cookies.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+        if let cookieHeader = opts.cookieHeader(for: url) {
             request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
 
-        if let extra = extraHeaders {
-            for (key, val) in extra {
-                request.setValue(val, forHTTPHeaderField: key)
-            }
+        for (key, val) in opts.extraHeaders {
+            request.setValue(val, forHTTPHeaderField: key)
         }
 
-        let (_, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
+        let probeDelegate = ProbeSessionDelegate()
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        config.timeoutIntervalForRequest = 15.0
+        config.timeoutIntervalForResource = 30.0
+
+        let session = URLSession(configuration: config, delegate: probeDelegate, delegateQueue: nil)
+
+        let httpResponse = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<HTTPURLResponse, Error>) in
+            probeDelegate.start(request: request, session: session, continuation: continuation)
         }
+
+        session.invalidateAndCancel()
 
         let statusCode = httpResponse.statusCode
         let finalURL = httpResponse.url ?? url
@@ -123,7 +120,7 @@ public actor DownloadProbe {
                 }
             }
         } else if statusCode == 200 {
-            // Server ignored Range header or doesn't support ranges
+            // Server ignored Range header
             if let ar = acceptRanges, ar.caseInsensitiveCompare("bytes") == .orderedSame {
                 supportsRange = true
             }
@@ -150,5 +147,62 @@ public actor DownloadProbe {
             contentDisposition: contentDisposition,
             suggestedFileName: suggestedFileName
         )
+    }
+}
+
+// MARK: - ProbeSessionDelegate
+
+private final class ProbeSessionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<HTTPURLResponse, Error>?
+
+    func start(request: URLRequest, session: URLSession, continuation: CheckedContinuation<HTTPURLResponse, Error>) {
+        lock.lock()
+        self.continuation = continuation
+        lock.unlock()
+
+        let task = session.dataTask(with: request)
+        task.resume()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            resumeWithError(URLError(.badServerResponse))
+            completionHandler(.cancel)
+            return
+        }
+
+        lock.lock()
+        if let cont = continuation {
+            continuation = nil
+            lock.unlock()
+            cont.resume(returning: httpResponse)
+        } else {
+            lock.unlock()
+        }
+
+        // Cancel probe immediately after headers received to avoid buffering entire response
+        completionHandler(.cancel)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            // If task was cancelled by completionHandler(.cancel), it's a normal completion for probe
+            if (error as NSError).code == NSURLErrorCancelled {
+                return
+            }
+            resumeWithError(error)
+        }
+    }
+
+    private func resumeWithError(_ error: Error) {
+        lock.lock()
+        if let cont = continuation {
+            continuation = nil
+            lock.unlock()
+            cont.resume(throwing: error)
+        } else {
+            lock.unlock()
+        }
     }
 }
