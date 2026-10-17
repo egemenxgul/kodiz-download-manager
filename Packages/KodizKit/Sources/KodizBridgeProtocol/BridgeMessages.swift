@@ -73,19 +73,46 @@ public struct BridgePayload: Codable, Sendable {
     }
 }
 
+public struct BridgeConfigPayload: Codable, Sendable {
+    public let enabled: Bool
+    public let minSizeBytes: Int64
+    public let interceptExtensions: [String]
+    public let excludedExtensions: [String]
+    public let excludedDomains: [String]
+    public let interceptIncognito: Bool
+
+    public init(
+        enabled: Bool = true,
+        minSizeBytes: Int64 = 1048576,
+        interceptExtensions: [String] = ["zip", "dmg", "pkg", "iso", "tar", "gz", "tgz", "7z", "rar", "mp4", "mkv", "mov", "mp3", "wav", "exe", "bin"],
+        excludedExtensions: [String] = ["pdf", "png", "jpg", "jpeg", "webp", "gif", "svg", "html", "css", "js"],
+        excludedDomains: [String] = [],
+        interceptIncognito: Bool = false
+    ) {
+        self.enabled = enabled
+        self.minSizeBytes = minSizeBytes
+        self.interceptExtensions = interceptExtensions
+        self.excludedExtensions = excludedExtensions
+        self.excludedDomains = excludedDomains
+        self.interceptIncognito = interceptIncognito
+    }
+}
+
 public struct BridgeResponse: Codable, Sendable {
     public let v: Int
     public let id: String
     public let ok: Bool
     public let downloadId: String?
     public let reason: String?
+    public let config: BridgeConfigPayload?
 
-    public init(v: Int = 1, id: String, ok: Bool, downloadId: String? = nil, reason: String? = nil) {
+    public init(v: Int = 1, id: String, ok: Bool, downloadId: String? = nil, reason: String? = nil, config: BridgeConfigPayload? = nil) {
         self.v = v
         self.id = id
         self.ok = ok
         self.downloadId = downloadId
         self.reason = reason
+        self.config = config
     }
 }
 

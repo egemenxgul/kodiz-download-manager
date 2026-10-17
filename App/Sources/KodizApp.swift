@@ -205,6 +205,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, BridgeServerDelegate, 
             } catch {
                 return BridgeResponse(id: message.id, ok: false, reason: error.localizedDescription)
             }
+        } else if message.type == "getConfig" {
+            let config = BridgeConfigPayload()
+            return BridgeResponse(id: message.id, ok: true, config: config)
+        } else if message.type == "status" || message.type == "hello" {
+            return BridgeResponse(id: message.id, ok: true)
         }
         return BridgeResponse(id: message.id, ok: true)
     }

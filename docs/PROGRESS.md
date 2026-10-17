@@ -138,6 +138,36 @@
     - Opera / Vivaldi NMH yolları: DOĞRULANMADI — neden: Belirtilen tarayıcılar test ortamında kurulu değil; her iki tarayıcı için hem kendi hem de Chrome manifest yollarına yazıldı.
   - **Sırada:** AŞAMA 5 — Eklenti (X1–X8).
 
-- [ ] **AŞAMA 5 — Eklenti (X1–X8)**
+- [x] **AŞAMA 5 — Eklenti (X1–X8)**
+  - **Yapılanlar:**
+    - **Cross-Browser Standartlaşma:** Tüm eklenti kodunda `chrome.*` yerine WXT'nin `browser.*` nesnesi kullanıldı (Promise tabanlı, Chromium, Firefox ve Safari uyumlu).
+    - **X1 (Safari Uyumluluğu):** Safari'de `browser.downloads` bulunmadığı için `background.ts`'te `browser.downloads.onCreated` koşullu olarak bağlandı. Safari için `content.ts` içinde indirilebilir uzantılara giden veya `download` özniteliği taşıyan `<a>` tıklamalarını yakalayıp background'a (`intercept_click`) bildiren ve uygulama reddederse normal indirmeyi devam ettiren mekanizma kuruldu.
+    - **X2 (Dosya Türü & Boyut Filtresi):** `filter.ts` saf fonksiyonları yazıldı. Yapılandırma `getConfig` Native Messaging mesajı ile uygulamadan alınıp `browser.storage.local`'da (`kodiz_config`) önbellekleniyor. İndirilebilir uzantılar (video, ses, arşiv, yürütülebilir dosyalar), hariç tutulan uzantılar (pdf, png, jpg vb.), hariç alan adları ve 1 MB altı indirmelerin filtrelenmesi uygulandı.
+    - **X3 (Option / ⌥ ile Atlama):** `content.ts` tıklamalarda `e.altKey` durumunu yakalayıp background'a (`bypass_download`) bildiriyor. Background 5 saniye boyunca bu URL için yakalamayı devre dışı bırakıyor.
+    - **X4 (Aç/Kapa Anahtarı & Popup):** Popup içindeki `#toggle-intercept` anahtarı `storage.local` üzerinden `config.enabled` değerine bağlandı. Popup açıldığında Kodiz yerel uygulamasıyla bağlantı durumu kontrol edilip "Bağlı" / "Bağlantı Yok" rozeti gösteriliyor.
+    - **X5 (Medya Algılama & Debounce):** `content.ts` içine 500 ms debounce'lu `MutationObserver` ve `PerformanceObserver` eklendi; sayfa içindeki `.m3u8`, `.mpd`, `.ism` akışları ve `<video>/<audio>` kaynakları tekilleştirilerek background'a gönderiliyor. Background sekme bazlı medya listesini tutuyor, araç çubuğu rozetinde sayıyı gösteriyor, sekme kapanınca/yenilenince temizliyor. Popup içinde tespit edilen medyalar listelenip tek tıkla "İndir" düğmesiyle uygulamaya aktarılabiliyor.
+    - **X6 (Gizli Pencere Kontrolü):** `item.incognito` indirmeleri `interceptIncognito` ayarı kapalıyken tarayıcıya bırakılıyor (varsayılan kapalı).
+    - **X7 (Zaman Aşımı & Yarış Koşulu Çözümü):** 10 saniyelik zaman aşımı ve geç gelen köprü yanıtlarının çakışmasını engellemek için tek seferlik `settled` bayrağı eklendi. Zaman aşımına uğramış bir indirme için `cancel` çağrılması engellendi.
+    - **X8 (totalBytes & Özel Şemalar):** `fileSize` yerine `totalBytes` kullanıldı; `blob:`, `data:` ve `file:` şemaları filtrelenerek doğrudan tarayıcıya bırakıldı.
+    - **Sabit Chrome Kimliği:** `wxt.config.ts` içinde Chrome hedefi için RSA-2048 DER base64 anahtarı `manifest.key` olarak eklendi.
+    - **Testler:** `filter.ts` ve `media.ts` saf fonksiyonları Vitest ile birim testlerine tabi tutuldu.
+  - **Çalıştırılan Testler & Kanıt:**
+    - `npm test` (Extension dizininde):
+      - Sonuç: 2 test dosyası, 17/17 test başarılı (`filter.test.ts`: 15 test, `media.test.ts`: 2 test).
+    - `npm run compile` (`tsc --noEmit`):
+      - Sonuç: Hatasız geçti (Exit code 0).
+    - `npx wxt build -b chrome`:
+      - Sonuç: Başarılı (manifest.json, background.js, content.js, popup.html üretildi, manifest'te `key` doğrulandı).
+    - `npx wxt build -b firefox`:
+      - Sonuç: Başarılı (firefox-mv2 üretildi).
+    - `npx wxt build -b safari`:
+      - Sonuç: Başarılı (safari-mv2 üretildi).
+  - **Doğrulama Durumu:**
+    - Birim testleri ve TypeScript derlemesi: DOĞRULANDI (17/17 Vitest, tsc 0 hata).
+    - WXT build (Chrome, Firefox, Safari): DOĞRULANDI.
+    - Gerçek tarayıcıda canlı tıklama/indirme yakalama testi: DOĞRULANMADI — neden: Başlıksız terminal ortamında tarayıcı UI oturumu açılamıyor.
+  - **Sırada:** AŞAMA 6 — Betikler, CI ve Belgeler (B1–B4).
+
 - [ ] **AŞAMA 6 — Betikler, CI ve Belgeler (B1–B4)**
+
 
