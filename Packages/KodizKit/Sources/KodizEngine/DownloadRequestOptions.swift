@@ -27,6 +27,16 @@ public struct DownloadRequestCookie: Codable, Sendable, Equatable {
         self.expirationDate = expirationDate
     }
 
+    public init(from cookie: HTTPCookie) {
+        self.name = cookie.name
+        self.value = cookie.value
+        self.domain = cookie.domain
+        self.path = cookie.path
+        self.secure = cookie.isSecure
+        self.httpOnly = cookie.isHTTPOnly
+        self.expirationDate = cookie.expiresDate
+    }
+
     public func matches(url: URL) -> Bool {
         if let domain = domain {
             let host = url.host?.lowercased() ?? ""

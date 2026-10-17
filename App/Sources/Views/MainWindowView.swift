@@ -1,51 +1,10 @@
 import SwiftUI
+import AppKit
 import KodizStore
 import KodizEngine
 
 public struct MainWindowView: View {
-    @State private var items: [AppDownloadItem] = [
-        AppDownloadItem(
-            fileName: "ubuntu-26.04-desktop-arm64.iso",
-            url: "https://cdimage.ubuntu.com/releases/ubuntu-26.04-desktop-arm64.iso",
-            totalBytes: 5_820_000_000,
-            downloadedBytes: 3_410_000_000,
-            speed: 48_200_000,
-            status: .downloading,
-            category: "archive",
-            activeConnections: 8,
-            maxConnections: 8,
-            segments: [
-                Segment(idx: 0, start: 0, end: 745_000_000, received: 745_000_000, state: .completed),
-                Segment(idx: 1, start: 745_000_001, end: 1_490_000_000, received: 512_000_000, state: .downloading),
-                Segment(idx: 2, start: 1_490_000_001, end: 2_235_000_000, received: 620_000_000, state: .downloading),
-                Segment(idx: 3, start: 2_235_000_001, end: 2_980_000_000, received: 745_000_000, state: .completed),
-                Segment(idx: 4, start: 2_980_000_001, end: 3_725_000_000, received: 320_000_000, state: .downloading),
-                Segment(idx: 5, start: 3_725_000_001, end: 4_470_000_000, received: 210_000_000, state: .downloading),
-                Segment(idx: 6, start: 4_470_000_001, end: 5_215_000_000, received: 170_000_000, state: .downloading),
-                Segment(idx: 7, start: 5_215_000_001, end: 5_820_000_000, received: 88_000_000, state: .downloading)
-            ]
-        ),
-        AppDownloadItem(
-            fileName: "Xcode_27.xip",
-            url: "https://developer.apple.com/download/Xcode_27.xip",
-            totalBytes: 11_800_000_000,
-            downloadedBytes: 1_652_000_000,
-            speed: 12_400_000,
-            status: .downloading,
-            category: "app",
-            activeConnections: 6,
-            maxConnections: 8
-        ),
-        AppDownloadItem(
-            fileName: "WWDC26_Keynote_1080p.mp4",
-            url: "https://youtube.com/watch?v=wwdc2026",
-            totalBytes: 2_100_000_000,
-            downloadedBytes: 2_100_000_000,
-            speed: 0,
-            status: .completed,
-            category: "video"
-        )
-    ]
+    @Environment(DownloadManager.self) private var downloadManager
 
     @State private var selectedFilter: String = "all"
     @State private var selectedItemId: UUID?
@@ -55,6 +14,10 @@ public struct MainWindowView: View {
     @State private var activeDetailItem: AppDownloadItem?
 
     public init() {}
+
+    private var items: [AppDownloadItem] {
+        downloadManager.items
+    }
 
     public var filteredItems: [AppDownloadItem] {
         items.filter { item in
@@ -101,10 +64,18 @@ public struct MainWindowView: View {
                 }
 
                 Section("Kategoriler") {
-                    Label("Video", systemImage: "film").tag("video")
-                    Label("Müzik", systemImage: "music.note").tag("music")
-                    Label("Arşiv", systemImage: "archivebox").tag("archive")
-                    Label("Uygulama", systemImage: "shippingbox").tag("app")
+                    Label("Video", systemImage: "film")
+                        .badge(items.filter { $0.category == "video" }.count)
+                        .tag("video")
+                    Label("Müzik", systemImage: "music.note")
+                        .badge(items.filter { $0.category == "music" }.count)
+                        .tag("music")
+                    Label("Arşiv", systemImage: "archivebox")
+                        .badge(items.filter { $0.category == "archive" }.count)
+                        .tag("archive")
+                    Label("Uygulama", systemImage: "shippingbox")
+                        .badge(items.filter { $0.category == "app" }.count)
+                        .tag("app")
                 }
             }
             .listStyle(.sidebar)
@@ -173,22 +144,50 @@ public struct MainWindowView: View {
                             activeDetailItem = item
                         }
                     }
-                    Button("Finder'da Göster") {}
+                    Button("Finder'da Göster") {
+                        if let id = selection.first {
+                            downloadManager.revealInFinder(id: id)
+                        }
+                    }
+                    Button("Aç") {
+                        if let id = selection.first {
+                            downloadManager.openFile(id: id)
+                        }
+                    }
+                    Button("URL'yi Kopyala") {
+                        if let id = selection.first {
+                            downloadManager.copyURL(id: id)
+                        }
+                    }
                     Divider()
-                    Button("Duraklat") {}
-                    Button("Sürdür") {}
+                    Button("Duraklat") {
+                        if let id = selection.first {
+                            Task { await downloadManager.pauseDownload(id: id) }
+                        }
+                    }
+                    Button("Sürdür") {
+                        if let id = selection.first {
+                            Task { await downloadManager.resumeDownload(id: id) }
+                        }
+                    }
                     Divider()
-                    Button("Listeden Sil") {}
+                    Button("Listeden Sil") {
+                        if let id = selection.first {
+                            Task { await downloadManager.deleteDownload(id: id, deleteFile: false) }
+                        }
+                    }
+                    Button("Dosyayla Birlikte Sil") {
+                        if let id = selection.first {
+                            Task { await downloadManager.deleteDownload(id: id, deleteFile: true) }
+                        }
+                    }
                 }
 
                 // Status Bar
                 HStack(spacing: 16) {
-                    let totalSpeed = items.filter { $0.status == .downloading }.reduce(0.0) { $0 + $1.speed }
-                    let activeCount = items.filter { $0.status == .downloading }.count
-
-                    Text("↓ \(formatSpeed(totalSpeed))")
+                    Text("↓ \(formatSpeed(downloadManager.totalSpeed))")
                         .fontWeight(.semibold)
-                    Text("· \(activeCount) aktif indirme")
+                    Text("· \(downloadManager.activeCount) aktif indirme")
                     Spacer()
                     Text("Hız Sınırı: Yok")
                 }
@@ -205,15 +204,33 @@ public struct MainWindowView: View {
                 Button(action: { isAddUrlPresented = true }) {
                     Label("URL Ekle", systemImage: "plus")
                 }
-                Button(action: {}) {
+                Button(action: {
+                    if let id = selectedItemId {
+                        Task { await downloadManager.resumeDownload(id: id) }
+                    }
+                }) {
                     Label("Sürdür", systemImage: "play.fill")
                 }
-                Button(action: {}) {
+                .disabled(selectedItemId == nil)
+
+                Button(action: {
+                    if let id = selectedItemId {
+                        Task { await downloadManager.pauseDownload(id: id) }
+                    }
+                }) {
                     Label("Duraklat", systemImage: "pause.fill")
                 }
-                Button(action: {}) {
+                .disabled(selectedItemId == nil)
+
+                Button(action: {
+                    if let id = selectedItemId {
+                        Task { await downloadManager.deleteDownload(id: id, deleteFile: false) }
+                    }
+                }) {
                     Label("Sil", systemImage: "trash")
                 }
+                .disabled(selectedItemId == nil)
+
                 Spacer()
                 Button(action: { isSettingsPresented = true }) {
                     Label("Ayarlar", systemImage: "gear")
@@ -223,14 +240,13 @@ public struct MainWindowView: View {
         .sheet(isPresented: $isAddUrlPresented) {
             AddUrlView(onStartDownload: { url, conns, dest in
                 isAddUrlPresented = false
-                let newItem = AppDownloadItem(
-                    fileName: url.lastPathComponent,
-                    url: url.absoluteString,
-                    status: .downloading,
-                    activeConnections: conns,
-                    maxConnections: conns
-                )
-                items.insert(newItem, at: 0)
+                Task {
+                    _ = try? await downloadManager.addDownload(
+                        url: url,
+                        connections: conns,
+                        destinationDirectory: dest
+                    )
+                }
             }, onCancel: {
                 isAddUrlPresented = false
             })
@@ -240,6 +256,7 @@ public struct MainWindowView: View {
         }
         .sheet(item: $activeDetailItem) { item in
             DetailWindowView(item: item)
+                .environment(downloadManager)
         }
     }
 
@@ -272,7 +289,11 @@ public struct MainWindowView: View {
 
     private func formatSpeed(_ s: Double) -> String {
         let mb = s / (1024 * 1024)
-        return String(format: "%.1f MB/s", mb)
+        if mb >= 1.0 {
+            return String(format: "%.1f MB/s", mb)
+        }
+        let kb = s / 1024
+        return String(format: "%.0f KB/s", kb)
     }
 
     private func formatETA(_ sec: Int?) -> String {

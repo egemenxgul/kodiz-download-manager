@@ -3,6 +3,7 @@ import KodizEngine
 import KodizStore
 
 public struct DetailWindowView: View {
+    @Environment(DownloadManager.self) private var downloadManager
     @Bindable public var item: AppDownloadItem
 
     public init(item: AppDownloadItem) {
@@ -99,15 +100,19 @@ public struct DetailWindowView: View {
 
             // Bottom Actions
             HStack {
-                Button("Duraklat") {
-                    // Pause action
+                Button(item.status == .downloading ? "Duraklat" : "Sürdür") {
+                    if item.status == .downloading {
+                        Task { await downloadManager.pauseDownload(id: item.id) }
+                    } else {
+                        Task { await downloadManager.resumeDownload(id: item.id) }
+                    }
                 }
                 Button("İptal Et") {
-                    // Cancel action
+                    Task { await downloadManager.deleteDownload(id: item.id, deleteFile: true) }
                 }
                 Spacer()
                 Button("Finder'da Göster") {
-                    // Reveal file
+                    downloadManager.revealInFinder(id: item.id)
                 }
             }
         }

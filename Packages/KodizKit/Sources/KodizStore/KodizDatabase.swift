@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import KodizEngine
 
 public final class KodizDatabase: @unchecked Sendable {
     public let dbQueue: DatabaseQueue
@@ -155,6 +156,34 @@ public final class KodizDatabase: @unchecked Sendable {
         }
     }
 
+    public func updateDownloadStatus(id: UUID, status: DownloadStatus) throws {
+        try dbQueue.write { db in
+            if var record = try DownloadRecord.fetchOne(db, key: id) {
+                record.status = status
+                try record.update(db)
+            }
+        }
+    }
+
+    public func updateDownloadDetails(id: UUID, totalBytes: Int64?, fileName: String?, etag: String?, mime: String?) throws {
+        try dbQueue.write { db in
+            if var record = try DownloadRecord.fetchOne(db, key: id) {
+                if let tb = totalBytes { record.totalBytes = tb }
+                if let fn = fileName { record.fileName = fn }
+                if let et = etag { record.etag = et }
+                if let mi = mime { record.mime = mi }
+                try record.update(db)
+            }
+        }
+    }
+
+    public func deleteDownload(id: UUID) throws {
+        try dbQueue.write { db in
+            _ = try SegmentRecord.filter(Column("downloadId") == id).deleteAll(db)
+            _ = try DownloadRecord.deleteOne(db, key: id)
+        }
+    }
+
     public func saveSegments(_ segments: [SegmentRecord]) throws {
         try dbQueue.write { db in
             for seg in segments {
@@ -166,6 +195,44 @@ public final class KodizDatabase: @unchecked Sendable {
     public func fetchSegments(for downloadId: UUID) throws -> [SegmentRecord] {
         try dbQueue.read { db in
             try SegmentRecord.filter(Column("downloadId") == downloadId).order(Column("idx").asc).fetchAll(db)
+        }
+    }
+
+    public func fetchEngineSegments(for downloadId: UUID) throws -> [Segment] {
+        let records = try fetchSegments(for: downloadId)
+        return records.map { rec in
+            let st: SegmentState
+            switch rec.state {
+            case "downloading": st = .downloading
+            case "completed": st = .completed
+            case "failed": st = .failed
+            default: st = .pending
+            }
+            return Segment(idx: rec.idx, start: rec.start, end: rec.end, received: rec.received, state: st)
+        }
+    }
+}
+
+// MARK: - DownloadCheckpointSink Conformance
+
+extension KodizDatabase: DownloadCheckpointSink {
+    public func checkpoint(id: UUID, segments: [Segment], downloadedBytes: Int64) async throws {
+        try await dbQueue.write { db in
+            if var record = try DownloadRecord.fetchOne(db, key: id) {
+                record.downloadedBytes = downloadedBytes
+                try record.update(db)
+            }
+            for seg in segments {
+                let rec = SegmentRecord(
+                    downloadId: id,
+                    idx: seg.idx,
+                    start: seg.start,
+                    end: seg.end,
+                    received: seg.received,
+                    state: seg.state.rawValue
+                )
+                try rec.save(db)
+            }
         }
     }
 }

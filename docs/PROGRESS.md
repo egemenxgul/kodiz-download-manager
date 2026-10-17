@@ -81,7 +81,38 @@
     - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build --package-path Tools/kdm-cli --scratch-path /tmp/kodiz-cli-build` -> BUILD SUCCESS.
   - **Sırada:** AŞAMA 3 — Kalıcılık ve Uygulama Katmanı (A1–A5).
 
-- [ ] **AŞAMA 3 — Kalıcılık ve Uygulama Katmanı (A1–A5)**
+- [x] **AŞAMA 3 — Kalıcılık ve Uygulama Katmanı (A1–A5)**
+  - **Yapılanlar:**
+    - **A1 (KodizStore & Checkpoint):** `KodizDatabase`'e `DownloadCheckpointSink` protokolü uygulandı; `checkpoint(id:segments:downloadedBytes:)` ile parça durumları ve indirilen baytlar SQLite'a atomik olarak yazılıyor. `fetchEngineSegments`, `deleteDownload` (cascade segment silme), `updateDownloadStatus`, `updateDownloadDetails` repository metodları eklendi.
+    - **Keychain Çerez Yönetimi:** `KeychainCookieStore` yazıldı (`kSecClassGenericPassword`, `dev.kodiz.DownloadManager.cookies`). Çerezler veritabanına düz metin yazılmıyor; indirme başına Keychain'de saklanıp indirme tamamlandığında veya silindiğinde temizleniyor.
+    - **A2 & DownloadManager:** `DownloadManager` (`@Observable @MainActor`) yazıldı.
+      - Motor örneklerini (`engines`), eşzamanlı indirme kuyruğunu (varsayılan 4) ve durum makinesini (`queued`, `downloading`, `paused`, `waitingNetwork`, `completed`, `failed`) yönetiyor.
+      - Açılışta SQLite'tan yükleme yapıyor; yarıda kalan indirmeler otomatik olarak `.paused` durumuna alınıyor.
+      - `NetworkObserver` (`NWPathMonitor`) ile ağ kesildiğinde indirmeler `.waitingNetwork` durumuna alınıp ağ gelince otomatik sürdürülüyor.
+      - Aktif indirme varken `SleepBlocker` (IOPMAssertion) ile Mac'in uyuması engelleniyor; indirmeler bitince serbest bırakılıyor.
+      - Bitişte `FileMetadata` (`applyQuarantine`, `applyWhereFroms`, `notifyDockDownloadsBounce`) tetikleniyor.
+    - **A2 (Arayüz Temizliği):** `KodizApp.swift` ve `MainWindowView.swift` içindeki tüm sahte/mock veriler kaldırıldı. Toolbar ve sağ tık menüsündeki tüm eylemler (`Duraklat`, `Sürdür`, `Sil`, `Dosyayla Sil`, `Finder'da Göster`, `Aç`, `URL'yi Kopyala`) `DownloadManager`'a bağlandı. Detay penceresi ve IDM tarzı parça tuvali (`SegmentCanvasView`) gerçek zamanlı verilere bağlandı.
+    - **A4 (LSUIElement & Yaşam Döngüsü):** `Info.plist`'e `LSUIElement = YES` eklendi. `AppDelegate` ilk açılışta ana pencereyi açıp `hasLaunchedBefore` bayrağını kaydediyor; sonraki açılışlarda menü çubuğunda kalıyor (`.accessory`). Pencere açılınca `.regular`, kapanınca `.accessory` politikası uygulanıyor.
+  - **Çalıştırılan Testler & Kanıt:**
+    - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path Packages/KodizKit --filter "StoreTests" --scratch-path /tmp/kodiz-kk-build`
+      - Sonuç: 3/3 test başarılı (testCheckpointSinkAndSegmentFetching, testDatabaseInitializationAndMigrations, testSaveAndFetchDownload).
+    - `xcodegen generate && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project KodizDownloadManager.xcodeproj -scheme "Kodiz Download Manager" -derivedDataPath /tmp/kodiz-dd build CODE_SIGNING_ALLOWED=NO`
+      - Sonuç: **BUILD SUCCEEDED** (Kodiz Download Manager.app, NativeHost, KodizSafari.appex başarıyla derlendi ve bağlandı).
+  - **Doğrulama Durumu:**
+    - Derleme: DOĞRULANDI (BUILD SUCCEEDED).
+    - UI Görsel / Ekran Görüntüsü: DOĞRULANMADI — neden: CLI/terminal oturumunda grafik ekran çıktısı ve pencere yöneticisi doğrudan yakalanamıyor.
+  - **Elle Duman Testi Adımları:**
+    1. Uygulamayı başlat: `open /tmp/kodiz-dd/Build/Products/Debug/"Kodiz Download Manager.app"`
+    2. Menü çubuğundaki Kodiz simgesine tıkla -> Popover açılır, aktif indirme olmadığını gösterir.
+    3. "+ URL Ekle" veya "Ana Pencere"ye tıkla -> Ana pencere açılır, Dock simgesi belirir.
+    4. "URL Ekle" düğmesine bas -> Bir test URL'si (ör. `http://127.0.0.1:<port>/range?size=10485760`) gir ve "Probe Et"e bas.
+    5. Boyut ve sürdürme desteği bilgisi geldikten sonra "Hemen Başlat"a bas -> İndirme listeye eklenir, hız ve ilerleme çubuğu canlı güncellenir.
+    6. İndirmeye sağ tıkla -> "Duraklat" seç -> Durum "Paused" olur, hız 0'a iner.
+    7. Tekrar sağ tıkla -> "Sürdür" seç -> İndirme kaldığı bayttan devam eder ve tamamlanır.
+    8. Sağ tıkla -> "Finder'da Göster" seç -> İndirilen dosya Finder'da vurgulanır.
+    9. Ana pencereyi kapat -> Dock simgesi kaybolur, uygulama menü çubuğunda çalışmaya devam eder.
+  - **Sırada:** AŞAMA 4 — Köprü ve Native Host (K1–K6, A3).
+
 - [ ] **AŞAMA 4 — Köprü ve Native Host (K1–K6, A3)**
 - [ ] **AŞAMA 5 — Eklenti (X1–X8)**
 - [ ] **AŞAMA 6 — Betikler, CI ve Belgeler (B1–B4)**

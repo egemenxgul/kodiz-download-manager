@@ -36,6 +36,7 @@ let package = Package(
         .target(
             name: "KodizStore",
             dependencies: [
+                "KodizEngine",
                 .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),
