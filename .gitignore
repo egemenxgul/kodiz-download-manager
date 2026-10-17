@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Xcode
+*.xcodeproj
+!project.yml
+*.xcworkspace
+xcuserdata/
+DerivedData/
+.build/
+Package.resolved
+
+# Node / WXT
+node_modules/
+.wxt/
+.output/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Binaries / Tools
+Resources/Tools/yt-dlp/*
+!Resources/Tools/yt-dlp/.keep
+Resources/Tools/ffmpeg
+Resources/Tools/ffprobe
+Resources/Tools/qjs
+Resources/Tools/deno
+
+# Test / Scratch files
+*.kodizpart
+scratch/
+tmp/

@@ -1,0 +1,19 @@
+{
+  "yt-dlp": {
+    "version": "2026.03.01",
+    "release_url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.03.01/yt-dlp_macos.zip",
+    "asset_name": "yt-dlp_macos.zip",
+    "sha256": ""
+  },
+  "ffmpeg": {
+    "version": "7.1",
+    "license": "LGPL-2.1",
+    "universal": true,
+    "sha256": ""
+  },
+  "quickjs-ng": {
+    "version": "0.12.0",
+    "release_url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.12.0/qjs-macos-arm64",
+    "sha256": ""
+  }
+}

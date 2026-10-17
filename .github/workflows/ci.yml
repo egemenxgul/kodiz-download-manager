@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: Extension/package.json
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Run KodizKit Swift Tests
+        run: |
+          swift test --package-path Packages/KodizKit --scratch-path /tmp/kodiz-build
+
+      - name: Build kdm-cli
+        run: |
+          swift build --package-path Tools/kdm-cli --scratch-path /tmp/kodiz-cli-build
+
+      - name: Build TestServer
+        run: |
+          swift build --package-path Tools/TestServer --scratch-path /tmp/kodiz-testserver-build
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build macOS App with Xcodebuild
+        run: |
+          xcodebuild -project KodizDownloadManager.xcodeproj \
+                     -scheme "Kodiz Download Manager" \
+                     -derivedDataPath /tmp/kodiz-dd \
+                     build CODE_SIGNING_ALLOWED=NO
+
+      - name: Build Browser Extensions (Chrome, Firefox, Safari)
+        run: |
+          cd Extension
+          npm install
+          npx wxt build -b chrome
+          npx wxt build -b firefox
+          npx wxt build -b safari
