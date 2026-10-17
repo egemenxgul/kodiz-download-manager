@@ -1,22 +1,83 @@
 import Foundation
+import Security
 
 public protocol BridgeServerDelegate: AnyObject, Sendable {
     func handleBridgeMessage(_ message: BridgeMessage) async -> BridgeResponse
 }
 
+public protocol BridgePeerValidator: Sendable {
+    func validate(clientFd: Int32) -> Bool
+}
+
+public struct MacPeerValidator: BridgePeerValidator {
+    public init() {}
+
+    public func validate(clientFd: Int32) -> Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["KODIZ_ALLOW_UNSIGNED_BRIDGE"] == "1" {
+            return true
+        }
+        #endif
+
+        var token = audit_token_t()
+        var tokenSize = socklen_t(MemoryLayout<audit_token_t>.size)
+
+        // SOL_LOCAL is 0 in Darwin
+        let ret = getsockopt(clientFd, 0, LOCAL_PEERTOKEN, &token, &tokenSize)
+        guard ret == 0 else { return false }
+
+        let tokenData = Data(bytes: &token, count: MemoryLayout<audit_token_t>.size)
+        let guestAttrs: [CFString: Any] = [
+            kSecGuestAttributeAudit: tokenData as CFData
+        ]
+
+        var secCode: SecCode?
+        let status = SecCodeCopyGuestWithAttributes(nil, guestAttrs as CFDictionary, [], &secCode)
+        guard status == errSecSuccess, let code = secCode else {
+            return false
+        }
+
+        // Must match our Team ID or approved bundle identifiers
+        let reqString = "identifier \"dev.kodiz.NativeHost\" or identifier \"dev.kodiz.DownloadManager.SafariExtension\" or identifier \"dev.kodiz.DownloadManager\""
+        var secReq: SecRequirement?
+        guard SecRequirementCreateWithString(reqString as CFString, [], &secReq) == errSecSuccess,
+              let req = secReq else {
+            return false
+        }
+
+        let checkStatus = SecCodeCheckValidity(code, [], req)
+        return checkStatus == errSecSuccess
+    }
+}
+
+public struct AllowAllPeerValidator: BridgePeerValidator {
+    public init() {}
+    public func validate(clientFd: Int32) -> Bool { true }
+}
+
 public final class BridgeServer: @unchecked Sendable {
     private let socketPath: String
     private weak var delegate: BridgeServerDelegate?
+    private let peerValidator: BridgePeerValidator
     private var serverFd: Int32 = -1
     private var isRunning: Bool = false
     private let queue = DispatchQueue(label: "dev.kodiz.BridgeServer", qos: .userInitiated)
 
-    public init(socketPath: String, delegate: BridgeServerDelegate? = nil) {
-        self.socketPath = socketPath
+    public init(
+        socketPath: String? = nil,
+        delegate: BridgeServerDelegate? = nil,
+        peerValidator: BridgePeerValidator? = nil
+    ) {
+        self.socketPath = socketPath ?? ((try? BridgeSocketPath.resolveSocketPath()) ?? "")
         self.delegate = delegate
+        self.peerValidator = peerValidator ?? MacPeerValidator()
     }
 
     public func start() throws {
+        guard !socketPath.isEmpty else {
+            throw POSIXError(.EINVAL)
+        }
+
         // Ensure parent directory exists with 0700 permissions
         let parentDir = URL(fileURLWithPath: socketPath).deletingLastPathComponent().path
         try FileManager.default.createDirectory(atPath: parentDir, withIntermediateDirectories: true, attributes: [
@@ -60,7 +121,7 @@ public final class BridgeServer: @unchecked Sendable {
 
         chmod(socketPath, 0o600)
 
-        guard listen(fd, 16) == 0 else {
+        guard listen(fd, 64) == 0 else {
             close(fd)
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
@@ -96,56 +157,141 @@ public final class BridgeServer: @unchecked Sendable {
                     continue
                 }
 
-                // Handle client on background queue
-                self.queue.async {
-                    self.handleClient(fd: clientFd)
+                // Handle client in an async Task so clientFd lifecycle is completely contained
+                Task {
+                    await self.handleClientAsync(fd: clientFd)
                 }
             }
         }
     }
 
-    private func handleClient(fd: Int32) {
-        defer { close(fd) }
+    private func handleClientAsync(fd: Int32) async {
+        // K1 & K6 fix: file descriptor is kept open for the ENTIRE duration of client handling
+        // and closed ONLY when the connection terminates.
+        defer {
+            close(fd)
+        }
 
-        var header = Data(count: 4)
-        var totalRead = 0
-        while totalRead < 4 {
-            let n = header.withUnsafeMutableBytes { ptr in
-                read(fd, ptr.baseAddress! + totalRead, 4 - totalRead)
+        // SO_NOSIGPIPE prevents SIGPIPE when peer disconnects unexpectedly
+        var nosigpipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
+
+        // Read and write timeouts (10 seconds)
+        var tv = timeval(tv_sec: 10, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        // K3: Peer Process Validation
+        guard peerValidator.validate(clientFd: fd) else {
+            let errorRes = BridgeResponse(id: "unauthorized", ok: false, reason: "Unauthorized peer process")
+            if let errData = try? JSONEncoder().encode(errorRes) {
+                _ = writeFull(fd: fd, data: MessageFraming.encode(errData))
             }
-            if n <= 0 { return }
+            return
+        }
+
+        // Support persistent connection with multiple request-response cycles
+        while isRunning {
+            guard let header = readFull(fd: fd, count: 4) else {
+                break // Client disconnected or read timed out
+            }
+
+            guard let payloadLen = MessageFraming.decodeHeader(from: header),
+                  payloadLen > 0, payloadLen <= 1024 * 1024 else {
+                let errorRes = BridgeResponse(id: "bad_header", ok: false, reason: "Invalid payload length")
+                if let errData = try? JSONEncoder().encode(errorRes) {
+                    _ = writeFull(fd: fd, data: MessageFraming.encode(errData))
+                }
+                break
+            }
+
+            guard let payload = readFull(fd: fd, count: Int(payloadLen)) else {
+                break
+            }
+
+            guard let message = try? JSONDecoder().decode(BridgeMessage.self, from: payload) else {
+                let errorRes = BridgeResponse(id: "malformed", ok: false, reason: "Malformed JSON message")
+                if let errData = try? JSONEncoder().encode(errorRes) {
+                    _ = writeFull(fd: fd, data: MessageFraming.encode(errData))
+                }
+                break
+            }
+
+            // Girdi doğrulaması
+            if let errorReason = validateMessageInput(message) {
+                let errorRes = BridgeResponse(id: message.id, ok: false, reason: errorReason)
+                if let errData = try? JSONEncoder().encode(errorRes) {
+                    _ = writeFull(fd: fd, data: MessageFraming.encode(errData))
+                }
+                continue
+            }
+
+            // Await delegate response before writing back!
+            let response = await self.delegate?.handleBridgeMessage(message)
+                ?? BridgeResponse(id: message.id, ok: true)
+
+            guard let resData = try? JSONEncoder().encode(response) else {
+                break
+            }
+
+            let framed = MessageFraming.encode(resData)
+            if !writeFull(fd: fd, data: framed) {
+                break
+            }
+        }
+    }
+
+    private func validateMessageInput(_ message: BridgeMessage) -> String? {
+        if message.type == "download.add" || message.type == "media.download" {
+            guard let urlString = message.payload?.url, !urlString.isEmpty else {
+                return "Missing or empty URL"
+            }
+
+            guard urlString.utf8.count <= 4096 else {
+                return "URL exceeds 4096 bytes limit"
+            }
+
+            guard let url = URL(string: urlString),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else {
+                return "Only http and https protocols are supported"
+            }
+
+            if let headers = message.payload?.extraHeaders {
+                for (k, v) in headers {
+                    if k.contains("\r") || k.contains("\n") || v.contains("\r") || v.contains("\n") {
+                        return "Header values cannot contain CRLF characters"
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    private func readFull(fd: Int32, count: Int) -> Data? {
+        var data = Data(count: count)
+        var totalRead = 0
+        while totalRead < count {
+            let n = data.withUnsafeMutableBytes { ptr in
+                read(fd, ptr.baseAddress! + totalRead, count - totalRead)
+            }
+            if n <= 0 { return nil }
             totalRead += n
         }
+        return data
+    }
 
-        guard let payloadLen = MessageFraming.decodeHeader(from: header), payloadLen <= 1024 * 1024 else {
-            return
-        }
-
-        var payload = Data(count: Int(payloadLen))
-        var payloadRead = 0
-        while payloadRead < Int(payloadLen) {
-            let n = payload.withUnsafeMutableBytes { ptr in
-                read(fd, ptr.baseAddress! + payloadRead, Int(payloadLen) - payloadRead)
+    private func writeFull(fd: Int32, data: Data) -> Bool {
+        return data.withUnsafeBytes { ptr in
+            guard let base = ptr.baseAddress else { return false }
+            var written = 0
+            let total = ptr.count
+            while written < total {
+                let n = write(fd, base + written, total - written)
+                if n <= 0 { return false }
+                written += n
             }
-            if n <= 0 { return }
-            payloadRead += n
-        }
-
-        guard let message = try? JSONDecoder().decode(BridgeMessage.self, from: payload) else {
-            let errorRes = BridgeResponse(id: "unknown", ok: false, reason: "Malformed message")
-            if let errData = try? JSONEncoder().encode(errorRes) {
-                let framed = MessageFraming.encode(errData)
-                _ = framed.withUnsafeBytes { ptr in write(fd, ptr.baseAddress, framed.count) }
-            }
-            return
-        }
-
-        Task {
-            let response = await self.delegate?.handleBridgeMessage(message) ?? BridgeResponse(id: message.id, ok: true)
-            if let resData = try? JSONEncoder().encode(response) {
-                let framed = MessageFraming.encode(resData)
-                _ = framed.withUnsafeBytes { ptr in write(fd, ptr.baseAddress, framed.count) }
-            }
+            return true
         }
     }
 }

@@ -60,7 +60,9 @@ let package = Package(
         ),
         .target(
             name: "KodizSystem",
-            dependencies: []
+            dependencies: [
+                "KodizBridgeProtocol"
+            ]
         )
     ]
 )

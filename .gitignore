@@ -37,3 +37,10 @@ Resources/Tools/deno
 *.kodizpart
 scratch/
 tmp/
+
+# Security / Keys (never commit private keys)
+*.pem
+*.key
+*.p8
+*.mobileprovision
+keys/

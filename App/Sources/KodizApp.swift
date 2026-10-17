@@ -125,6 +125,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, BridgeServerDelegate, 
     private var bridgeServer: BridgeServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Install or repair browser Native Messaging Host manifests
+        NativeHostInstaller.installManifests()
+
         // Start Bridge Server for browser extensions IPC
         let socketPath = AppGroupPaths.bridgeSocketPath
         let server = BridgeServer(socketPath: socketPath, delegate: self)

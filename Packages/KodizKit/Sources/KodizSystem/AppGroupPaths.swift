@@ -1,4 +1,5 @@
 import Foundation
+import KodizBridgeProtocol
 
 public enum AppGroupPaths {
     public static let groupIdentifier = "dev.kodiz.DownloadManager"
@@ -18,7 +19,7 @@ public enum AppGroupPaths {
 
     /// Socket path for Native Messaging Host & Extension IPC
     public static var bridgeSocketPath: String {
-        return sharedContainerURL.appendingPathComponent("bridge.sock").path
+        return (try? BridgeSocketPath.resolveSocketPath()) ?? sharedContainerURL.appendingPathComponent("bridge.sock").path
     }
 
     /// Tools directory for yt-dlp, ffmpeg, qjs

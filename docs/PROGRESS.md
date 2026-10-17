@@ -113,6 +113,31 @@
     9. Ana pencereyi kapat -> Dock simgesi kaybolur, uygulama menü çubuğunda çalışmaya devam eder.
   - **Sırada:** AŞAMA 4 — Köprü ve Native Host (K1–K6, A3).
 
-- [ ] **AŞAMA 4 — Köprü ve Native Host (K1–K6, A3)**
+- [x] **AŞAMA 4 — Köprü ve Native Host (K1–K6, A3)**
+  - **Yapılanlar:**
+    - **Ortak Soket Yolu (K2):** `BridgeSocketPath.resolveSocketPath()` tek bir merkezi fonksiyon olarak `KodizBridgeProtocol`'e eklendi. App Group konteyneri çözülürse `<group>/bridge.sock`, aksi halde `~/Library/Application Support/Kodiz Download Manager/bridge.sock` döndürülüyor. `sun_path` 104 bayt sınırı doğrulanıyor. `AppGroupPaths` da buna uyarlandı.
+    - **FD Yaşam Döngüsü & Async Yanıt (K1):** `BridgeServer.swift` tamamen asenkron `handleClientAsync(fd:)` mimarisine geçirildi. Dosya tanımlayıcısı yanıt tam olarak yazılana kadar açık tutuluyor (`defer { close(fd) }` yalnızca async döngü bittiğinde çalışıyor). Kapanmış veya devredilmiş FD'ye yazma riski tamamen ortadan kaldırıldı.
+    - **Kısmi Yazma / Soket Güvenliği (K6):** `UnixSocketClient` ve `BridgeServer` düşük seviyeli `send`/`recv` döngüleriyle kısmi yazmaları tam boyuta ulaşana kadar sürüyor. `SO_NOSIGPIPE`, `SO_RCVTIMEO` ve `SO_SNDTIMEO` (10 saniye) eklendi. Tek bağlantıda çoklu istek desteği eklendi.
+    - **Karşı Taraf Doğrulaması (K3):** `MacPeerValidator` yazıldı. `getsockopt(LOCAL_PEERTOKEN)` ile arayan sürecin audit token'ı alınıyor; `SecCodeCopyGuestWithAttributes` ve `SecCodeCheckValidity` ile `dev.kodiz.NativeHost` veya `dev.kodiz.DownloadManager.SafariExtension` yetkili bundle kimlikleri kontrol ediliyor. Testler ve yerel imzasız çalıştırma için `AllowAllPeerValidator` ve `KODIZ_ALLOW_UNSIGNED_BRIDGE=1` kaçış yolu sağlandı (Release derlemesinde bypass engelleniyor).
+    - **Girdi Güvenliği:** HTTP/HTTPS şema zorunluluğu, 4096 bayt URL sınırı, CRLF injection engeli ve mesaj başına 1 MB sınırı eklendi.
+    - **A3 & K1 Birlikte Çözümü:** `AppDelegate.handleBridgeMessage` içinde `download.add` isteği geldiğinde dosya önce SQLite veritabanına kaydedilip kuyruğa ekleniyor; ardından eklentiye gerçek `downloadId` ve `ok: true` yanıtı dönülüyor. Hata durumunda `ok: false, reason: ...` dönülerek tarayıcının indirmeyi iptal etmesi engelleniyor.
+    - **NMH Uygulama Başlatma (K4):** `NativeMessagingHost.swift` stdin/stdout çerçevelemesini düşük seviyeli okuma/yazma döngüleriyle yapıyor. Soket bulunamadığında (uygulama kapalıyken) `NSWorkspace.shared.openApplication(at:configuration:)` ile uygulamayı arka planda (`activates = false`, `--background`) başlatıyor ve soketi 8 saniyeye kadar yokluyor. `hello` mesajı için uygulama gereksiz yere başlatılmıyor.
+    - **Manifest Kurucu (NativeHostInstaller):** Chrome, Canary, Chromium, Brave, Edge, Opera, Vivaldi ve Firefox için JSON manifestleri `~/Library/Application Support/.../NativeMessagingHosts` klasörlerine yazan `NativeHostInstaller` uygulandı. Opera ve Vivaldi hem kendi yollarına hem Chrome yoluna yazılarak belgelendi.
+    - **Sabit Chromium Kimliği:** RSA-2048 anahtar çifti üretildi (`/tmp/kodiz-keys/kodiz_extension_private.pem`). Base64 DER açık anahtarı manifest'e ve eklenti yapılandırmasına eklendi. Türetilen Extension ID: `clcoapdgcnijgajpkdplenikocmfpdfg`. Özel anahtar repoya konulmadı (`.gitignore` koruması altında).
+    - **Safari Appex (K5):** `SafariExtension.entitlements` dosyasına `com.apple.security.app-sandbox = true` ve `application-groups` eklendi. `SafariWebExtensionHandler.swift` gelen mesajı Unix soketine iletiyor, gerekirse uygulamayı arka planda açıyor ve gerçek yanıtı Safari'ye döndürüyor.
+  - **Çalıştırılan Testler & Kanıt:**
+    - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path Packages/KodizKit --filter "BridgeProtocolTests" --scratch-path /tmp/kodiz-kk-build`
+      - Sonuç: 7/7 test başarılı (testBridgeMessageSerialization, testMessageFraming, testConcurrent50Requests, testDelayedDelegateResponse, testMalformedMessageHandling, testLargeMessageRejection, testNativeHostInstallerManifestGeneration).
+    - `xcodegen generate && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project KodizDownloadManager.xcodeproj -scheme "Kodiz Download Manager" -derivedDataPath /tmp/kodiz-dd build CODE_SIGNING_ALLOWED=NO`
+      - Sonuç: **BUILD SUCCEEDED** (Kodiz Download Manager.app, NativeHost ve KodizSafari.appex).
+  - **Doğrulama Durumu:**
+    - Köprü soket iletişimi ve 50 eşzamanlı istek: DOĞRULANDI (Birim/entegrasyon testleriyle).
+    - NMH manifest yazımı: DOĞRULANDI (Birim testleriyle).
+    - Safari appex derlemesi: DOĞRULANDI (BUILD SUCCEEDED).
+    - Safari'de gerçek tarayıcı çalıştırması: DOĞRULANMADI — neden: Apple Developer hesabı ve imzalı Appex kimliği gerektiriyor.
+    - Opera / Vivaldi NMH yolları: DOĞRULANMADI — neden: Belirtilen tarayıcılar test ortamında kurulu değil; her iki tarayıcı için hem kendi hem de Chrome manifest yollarına yazıldı.
+  - **Sırada:** AŞAMA 5 — Eklenti (X1–X8).
+
 - [ ] **AŞAMA 5 — Eklenti (X1–X8)**
 - [ ] **AŞAMA 6 — Betikler, CI ve Belgeler (B1–B4)**
+
