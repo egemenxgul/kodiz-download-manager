@@ -1,7 +1,7 @@
 # Kodiz Download Manager (KDM) 🚀
 
 [![CI](https://github.com/egemenxgul/kodiz-download-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/egemenxgul/kodiz-download-manager/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-macOS%2014%2B%20(Sonoma%2B)-black.svg)]()
 [![Architecture](https://img.shields.io/badge/Arch-Universal%20(Apple%20Silicon%20%2B%20Intel)-orange.svg)]()
 
@@ -82,5 +82,10 @@ npm run build:safari  # Safari
 
 ## 📄 Lisans
 
-Bu proje [MIT Lisansı](LICENSE) altında lisanslanmıştır.
-Proje içerisindeki üçüncü taraf araçlar (`ffmpeg` LGPL-2.1, `yt-dlp` Unlicense, `QuickJS-ng` MIT, `GRDB` MIT) kendi lisanslarına tabidir.
+Kodiz Download Manager **[PolyForm Noncommercial License 1.0.0](LICENSE)** ile lisanslanmıştır. Kaynak kodu açıktır, ancak bu bir ticari açık kaynak lisansı değildir:
+
+- **Serbest:** Kişisel kullanım, öğrenme, araştırma, hobi projeleri ve deneme; okullar, üniversiteler, dernekler, vakıflar ve kamu kurumları gibi ticari olmayan kuruluşlar. Bu amaçlarla yazılımı değiştirebilir ve dağıtabilirsiniz.
+- **İzne Tabi (Yasak):** Her türlü ticari kullanım, satış, ücretli dağıtım, ticari bir ürüne/hizmete dahil etme veya ticari amaçla yayınlama. Ticari lisans ve izinler için proje sahibiyle iletişime geçin.
+- **Atıf Zorunlu:** Yazılımın tamamını veya bir kısmını alan herkes [LICENSE](LICENSE) dosyasındaki `Required Notice:` satırını ve lisans koşullarını korumak zorundadır.
+
+Kullanılan üçüncü taraf bileşenler (`ffmpeg` LGPL-2.1, `yt-dlp` Unlicense, `QuickJS-ng` MIT, `GRDB` MIT) kendi açık kaynak lisanslarına tabidir.
