@@ -168,6 +168,51 @@
     - Gerçek tarayıcıda canlı tıklama/indirme yakalama testi: DOĞRULANMADI — neden: Başlıksız terminal ortamında tarayıcı UI oturumu açılamıyor.
   - **Sırada:** AŞAMA 6 — Betikler, CI ve Belgeler (B1–B4).
 
-- [ ] **AŞAMA 6 — Betikler, CI ve Belgeler (B1–B4)**
+- [x] **AŞAMA 6 — Betikler, CI ve Belgeler (B1–B4)**
+  - **Yapılanlar:**
+    - **B1 (fetch-tools.sh):**
+      - `set -euo pipefail` korundu, tüm `|| true` ifadeleri kaldırıldı.
+      - Sürüm ve sağlama toplamları `python3 -I -c` ile JSON'dan doğrudan okundu (hatalı `grep` kaldırıldı).
+      - İndirilen tüm paketler için `verify_sha256` ile sıkı SHA-256 denetimi eklendi.
+      - `quickjs-ng` için `qjs-darwin-arm64` ve `qjs-darwin-x86_64` indirilip SHA-256 doğrulandı, `lipo -create` ile universal binary (`Resources/Tools/qjs`) yapıldı ve smoke test ile doğrulandı.
+      - `yt-dlp_macos.zip` (2026.08.19) indirildi, SHA-256 doğrulandı, açıldı ve `yt-dlp_macos` çalıştırılabiliri `Resources/Tools/yt-dlp/yt-dlp` olarak bağlanıp `--version` duman testi yapıldı.
+      - `Tools/versions.json` güncel ve resmî SHA-256 değerleriyle dolduruldu; `ffmpeg` kapsam dışı olarak `build pending` olarak işaretlendi.
+    - **B2 (GitHub Actions CI):**
+      - `ci.yml` dosyasında `macos-14` varsayılan Xcode'unun Swift 6 desteklememesi sorunu analiz edildi. Runner `macos-15` olarak güncellendi ve `maxim-lobanov/setup-xcode` ile kararlı Xcode 16 seçimi eklendi.
+      - `cache-dependency-path: Extension/package-lock.json` yapıldı, `npm ci` kullanımına geçildi.
+      - Eklenti adımlarına `npm run compile` ve `npm test` eklendi.
+    - **B3 (Spike Belgeleri Dürüstlüğü):**
+      - `docs/spikes/*.md` dosyalarının tümünün başına durum satırları eklendi (`01: Doğrulandı`, `02: DOĞRULANMADI`, `03: Kısmen doğrulandı`, `04: Kısmen doğrulandı`, `05: Kısmen doğrulandı`).
+      - Ölçülmemiş sayılar temizlendi veya `(beklenen)` olarak etiketlendi. Opera/Vivaldi yolları ve Apple Notarization açıkça `DOĞRULANMADI` olarak belirtildi.
+      - Spike 01'e T1 & T13'teki çoklu TCP bağlantısı ve > 2 GB/s performans kanıtı eklendi.
+    - **B4 (README.md Güncellemesi):**
+      - Üste `> **Durum:** Erken geliştirme (alfa öncesi)` eklendi.
+      - Özellik listesi `✅ Çalışıyor (Testlerle Doğrulandı) / 🔄 Geliştiriliyor / 📋 Planlanan` olarak üçe ayrıldı.
+      - "Açık kaynaklı" ifadesi PolyForm Noncommercial lisansına uygun olarak "kaynak kodu açık (PolyForm Noncommercial 1.0.0)" olarak düzeltildi.
+      - Geliştirme bölümüne `DEVELOPER_DIR` ve `--scratch-path / -derivedDataPath` ortam notları eklendi.
+  - **Çalıştırılan Testler & Kanıt:**
+    - `./Scripts/fetch-tools.sh`:
+      - Sonuç: Başarılı. yt-dlp `2026.08.19` ve QuickJS-ng universal binary (`Resources/Tools/qjs`) SHA-256 ile doğrulanıp smoke testleri geçti.
+    - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build --package-path Tools/kdm-cli --scratch-path /tmp/kodiz-cli-build`:
+      - Sonuç: Build complete, kdm-cli çalıştırıldı (`--help`).
+    - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift build --package-path Tools/TestServer --scratch-path /tmp/kodiz-ts-build`:
+      - Sonuç: Build complete.
+  - **Doğrulama Durumu:**
+    - fetch-tools betiği ve araçlar: DOĞRULANDI (Resmî SHA-256 ve smoke testlerle).
+    - CI iş akışı: DOĞRULANMADI (Push yapılmadığı için GitHub runner üzerinde test edilemedi; push sonrası izlenmeli).
+
+---
+
+## 📌 Sahibin Kararı Gereken Konular (Owner Decisions Required)
+
+1. **Apple Developer Team ID & App Group Konfigürasyonu:**
+   - Apple App Sandbox ve Safari Web Extension için resmî App Group kimliği `<TEAMID>.dev.kodiz.DownloadManager` biçiminde olmalıdır. Şu an yerelde geliştirme amacıyla `dev.kodiz.DownloadManager` sabiti kullanılmaktadır. Ücretli Apple Developer hesabı açıldığında Team ID sabiti `AppGroupPaths.swift` içine girilmelidir.
+2. **Notarization & Kod İmzalama:**
+   - Uygulamanın Gatekeeper uyarısı vermeden harici dağıtılabilmesi için Developer ID Application sertifikası ile `xcrun notarytool submit` yapılması gerekmektedir.
+3. **Chromium Eklentisi Özel Anahtarı:**
+   - RSA-2048 açık anahtarı manifest'e gömülmüş ve sabit ID (`clcoapdgcnijgajpkdplenikocmfpdfg`) elde edilmiştir. Özel anahtar (`/tmp/kodiz-keys/kodiz_extension_private.pem`) güvenlik nedeniyle repoya eklenmemiştir (`.gitignore` korumalı). Proje sahibinin bu anahtarı güvenli bir parola yöneticisinde / CI Secrets'ta saklaması gerekir.
+4. **Opera ve Vivaldi NMH Yolları:**
+   - Bu iki tarayıcı yerel test ortamında kurulu olmadığı için hem Chrome hem de kendi varsayılan klasörlerine yazılmıştır. Kullanıcı kurulu ortamda test edip teyit etmelidir.
+
 
 

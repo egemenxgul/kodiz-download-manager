@@ -1,19 +1,21 @@
 {
   "yt-dlp": {
-    "version": "2026.03.01",
-    "release_url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.03.01/yt-dlp_macos.zip",
+    "version": "2026.08.19",
+    "release_url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_macos.zip",
     "asset_name": "yt-dlp_macos.zip",
-    "sha256": ""
+    "sha256": "07e54b0865303c864006925913bce2604f8ee8cc6f18699bac9c309f9328a6d8"
+  },
+  "quickjs-ng": {
+    "version": "0.17.0",
+    "release_url_arm64": "https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-darwin-arm64",
+    "sha256_arm64": "8be3ddfe3397d2e692e4e1e8972ee9d032a0a580505d2f8b4ea528cf1b651c11",
+    "release_url_x86_64": "https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-darwin-x86_64",
+    "sha256_x86_64": "9e5e101b4fd13cda3204222ca9f8be35412c41dcdef3745829633b7a67245412"
   },
   "ffmpeg": {
     "version": "7.1",
+    "status": "build pending",
     "license": "LGPL-2.1",
-    "universal": true,
-    "sha256": ""
-  },
-  "quickjs-ng": {
-    "version": "0.12.0",
-    "release_url": "https://github.com/quickjs-ng/quickjs/releases/download/v0.12.0/qjs-macos-arm64",
-    "sha256": ""
+    "note": "ffmpeg derlemesi şimdilik kapsam dışı"
   }
 }

@@ -1,7 +1,9 @@
 # Spike 02: yt-dlp onedir İmzalama ve Notarization
 
+> **Durum:** DOĞRULANMADI — neden: Apple Developer hesabı ve geçerli Developer ID sertifikası gerektirir; notarization submission yerel test ortamında çalıştırılmadı. Kod imzalama ve paket sırası mimari olarak belgelendi.
+
 ## Amaç
-PyInstaller ile paketlenen yt-dlp'nin macOS Notarization kurallarına tam uyumlu şekilde Developer ID ile imzalanmasını doğrulamak. Tek dosyalık PyInstaller çalıştırılabilirleri her açılışta `/tmp` altına kendini açarak 1-2 saniyelik gecikme yaratır. `onedir` yapısı ise doğrudan yerel kütüphaneleri çalıştırır.
+PyInstaller ile paketlenen yt-dlp'nin macOS Notarization kurallarına tam uyumlu şekilde Developer ID ile imzalanmasını doğrulamak. Tek dosyalık PyInstaller çalıştırılabilirleri her açılışta `/tmp` altına kendini açarak gecikme yaratır. `onedir` yapısı ise doğrudan yerel kütüphaneleri çalıştırır.
 
 ## İmzalama Sırası (İçten Dışa)
 Apple Hardened Runtime ve Notary Service için `--deep` bayrağı kullanılması güvenli değildir. İçten dışa doğru sırayla imza atılmalıdır:
@@ -16,4 +18,4 @@ Apple Hardened Runtime ve Notary Service için `--deep` bayrağı kullanılması
 ## Entitlement'lar
 - Ana uygulama: Hardened Runtime aktif, `com.apple.security.application-groups` aktif.
 - Sandboxed App Store kurallarına tabi olunmadığı için `fork`/`exec` serbesttir.
-- Notarization işlemi `xcrun notarytool submit` ile başarıyla tamamlanır.
+- Notarization işlemi `xcrun notarytool submit` ile tamamlanması beklenmektedir (DOĞRULANMADI: Developer hesabı ve Team ID gerektirir).

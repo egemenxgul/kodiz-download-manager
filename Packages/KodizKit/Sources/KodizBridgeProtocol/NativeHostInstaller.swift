@@ -66,7 +66,7 @@ public enum NativeHostInstaller: Sendable {
 
         for browser in supportedBrowsers {
             // Check if browser is installed via bundle ID (or always write for Chrome/Firefox)
-            let isInstalled = isBrowserInstalled(bundleIdentifier: browser.bundleIdentifier)
+            _ = isBrowserInstalled(bundleIdentifier: browser.bundleIdentifier)
 
             let dirURL = appSupport.appendingPathComponent(browser.manifestDirectoryRelPath)
             do {
