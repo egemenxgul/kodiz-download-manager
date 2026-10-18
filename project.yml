@@ -23,6 +23,9 @@ targets:
       - path: App/Sources
     info:
       path: App/Resources/Info.plist
+      properties:
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.utilities
     entitlements:
       path: App/Resources/App.entitlements
     settings:

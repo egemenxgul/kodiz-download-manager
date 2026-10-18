@@ -134,11 +134,15 @@ public final class DownloadManager: Sendable {
             KeychainCookieStore.saveCookies(cookies, for: id)
         }
 
-        // 1. Initial probe
-        let probe = DownloadProbe()
+        // 1. Initial probe. Short budget: the browser extension gives up after 10 s and would
+        // then download the file itself while Kodiz also does → duplicate download.
+        let probe = DownloadProbe(timeout: 5)
         let probeResult = try await probe.probe(url: url, options: options)
 
-        let fileName = preferredFileName ?? probeResult.suggestedFileName
+        let fileName = reserveFileName(
+            hint: preferredFileName.flatMap { $0.isEmpty ? nil : $0 } ?? probeResult.suggestedFileName,
+            in: dest
+        )
         let tempPath = dest.appendingPathComponent(fileName + ".kodizpart").path
         let category = categorizeFileName(fileName)
 
@@ -191,6 +195,24 @@ public final class DownloadManager: Sendable {
         drainQueue()
 
         return id
+    }
+
+    /// Safe, unique file name: hints may be full paths, and names already used by files,
+    /// `.kodizpart` files or other queued downloads in the same folder are never reused
+    private func reserveFileName(hint: String, in dest: URL) -> String {
+        let reserved = Set((try? db.fetchAllDownloads())?
+            .filter { $0.destDir == dest.path && $0.status != .completed }
+            .map(\.fileName) ?? [])
+        var name = FileNameParser.uniqueFileName(destDir: dest, preferredName: FileNameParser.sanitizedHint(hint))
+        let ext = (name as NSString).pathExtension
+        let base = (name as NSString).deletingPathExtension
+        var counter = 1
+        while reserved.contains(name) {
+            name = "\(base) (\(counter))" + (ext.isEmpty ? "" : ".\(ext)")
+            name = FileNameParser.uniqueFileName(destDir: dest, preferredName: name)
+            counter += 1
+        }
+        return name
     }
 
     public func pauseDownload(id: UUID) async {
@@ -369,6 +391,12 @@ public final class DownloadManager: Sendable {
         item.activeConnections = 0
         if let total = item.totalBytes {
             item.downloadedBytes = total
+        }
+
+        // The engine may have picked "name (1).ext" if the name got taken meanwhile
+        if finalURL.lastPathComponent != item.fileName {
+            item.fileName = finalURL.lastPathComponent
+            try? db.updateDownloadDetails(id: id, totalBytes: item.totalBytes, fileName: item.fileName, etag: nil, mime: nil)
         }
 
         // Apply macOS file metadata

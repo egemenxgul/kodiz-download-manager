@@ -86,12 +86,8 @@ struct KodizApp: App {
                 Divider()
 
                 HStack {
-                    Button("+ URL Ekle") {
-                        appDelegate.showMainWindow()
-                    }
-                    Button("Ana Pencere") {
-                        appDelegate.showMainWindow()
-                    }
+                    MainWindowButton(title: "+ URL Ekle")
+                    MainWindowButton(title: "Ana Pencere")
                     Spacer()
                     Button("Çıkış") {
                         NSApp.terminate(nil)
@@ -121,6 +117,20 @@ struct KodizApp: App {
     }
 }
 
+/// Opens (or re-creates) the main window; a closed SwiftUI `Window` cannot be found in `NSApp.windows`
+private struct MainWindowButton: View {
+    let title: String
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button(title) {
+            NSApp.setActivationPolicy(.regular)
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, BridgeServerDelegate, @unchecked Sendable {
     private var bridgeServer: BridgeServer?
 
@@ -138,20 +148,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, BridgeServerDelegate, 
             print("Failed to start IPC BridgeServer: \(error)")
         }
 
-        // Show window only on very first launch; subsequent launches stay in menu bar
+        // LSUIElement: no Dock icon at launch. Show the window only on the very first launch;
+        // later launches (login item, browser bridge) stay in the menu bar.
         let hasLaunchedBefore = UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
         if !hasLaunchedBefore {
             UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
             showMainWindow()
         } else {
-            NSApp.setActivationPolicy(.accessory)
+            // SwiftUI opens the `Window` scene on launch; close it once it exists
+            DispatchQueue.main.async {
+                NSApp.windows.filter(Self.isMainWindow).forEach { $0.close() }
+            }
         }
+    }
+
+    private static func isMainWindow(_ window: NSWindow) -> Bool {
+        window.identifier?.rawValue.hasPrefix("main") ?? false
     }
 
     func showMainWindow() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "main" }) {
+        if let window = NSApp.windows.first(where: Self.isMainWindow) {
             window.makeKeyAndOrderFront(nil)
         }
     }
@@ -210,7 +228,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, BridgeServerDelegate, 
             return BridgeResponse(id: message.id, ok: true, config: config)
         } else if message.type == "status" || message.type == "hello" {
             return BridgeResponse(id: message.id, ok: true)
+        } else if message.type == "media.download" {
+            // Video indirme (yt-dlp) henüz bağlanmadı: başarı gibi görünmesin
+            return BridgeResponse(id: message.id, ok: false, reason: "Video indirme henüz desteklenmiyor")
         }
-        return BridgeResponse(id: message.id, ok: true)
+        return BridgeResponse(id: message.id, ok: false, reason: "Bilinmeyen mesaj türü: \(message.type)")
     }
 }

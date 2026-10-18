@@ -143,11 +143,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     };
 
+    let reason = 'Kodiz uygulamasına ulaşılamadı';
     try {
       const response = (await browser.runtime.sendNativeMessage(NATIVE_HOST_NAME, message)) as any;
       if (response?.ok) {
         window.close();
+        return;
       }
+      if (response?.reason) reason = response.reason;
     } catch {}
+
+    // Show why nothing happened instead of failing silently
+    const original = downloadPageBtn.textContent;
+    downloadPageBtn.textContent = reason;
+    downloadPageBtn.disabled = true;
+    setTimeout(() => {
+      downloadPageBtn.textContent = original;
+      downloadPageBtn.disabled = false;
+    }, 3000);
   });
 });
