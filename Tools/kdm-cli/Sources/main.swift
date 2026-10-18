@@ -11,6 +11,33 @@ struct CheckpointData: Codable {
     let segments: [Segment]
 }
 
+/// Writes the engine's checkpoints to a JSON file so `kdm-cli resume` survives `kill -9`
+final class FileCheckpointSink: DownloadCheckpointSink, @unchecked Sendable {
+    private let path: URL
+    private let url: URL
+    private let destinationDirectory: URL
+    weak var engine: DownloadEngine?
+
+    init(path: URL, url: URL, destinationDirectory: URL) {
+        self.path = path
+        self.url = url
+        self.destinationDirectory = destinationDirectory
+    }
+
+    func checkpoint(id: UUID, segments: [Segment], downloadedBytes: Int64) async throws {
+        guard let engine else { return }
+        let data = CheckpointData(
+            id: id,
+            url: url,
+            destinationDirectory: destinationDirectory,
+            fileName: await engine.fileName,
+            totalBytes: await engine.totalBytes,
+            segments: segments
+        )
+        try JSONEncoder().encode(data).write(to: path, options: .atomic)
+    }
+}
+
 final class CLIDownloadDelegate: DownloadEngineDelegate, @unchecked Sendable {
     private let startTime = Date()
     private let url: URL
@@ -122,11 +149,16 @@ struct KDMCLI {
 
         let destURL = URL(fileURLWithPath: destDir)
         let delegate = CLIDownloadDelegate(url: url)
+        let sink = checkpointPath.map {
+            FileCheckpointSink(path: URL(fileURLWithPath: $0), url: url, destinationDirectory: destURL)
+        }
         let engine = DownloadEngine(
             url: url,
             destinationDirectory: destURL,
-            delegate: delegate
+            delegate: delegate,
+            checkpointSink: sink
         )
+        sink?.engine = engine
 
         if let pauseSec = pauseAfter {
             Task {
@@ -198,13 +230,20 @@ struct KDMCLI {
         print("Connections: \(connections)")
 
         let delegate = CLIDownloadDelegate(url: ck.url)
+        let sink = FileCheckpointSink(
+            path: URL(fileURLWithPath: checkpointPath),
+            url: ck.url,
+            destinationDirectory: ck.destinationDirectory
+        )
         let engine = DownloadEngine(
             id: ck.id,
             url: ck.url,
             destinationDirectory: ck.destinationDirectory,
             preferredFileName: ck.fileName,
-            delegate: delegate
+            delegate: delegate,
+            checkpointSink: sink
         )
+        sink.engine = engine
 
         do {
             try await engine.start(connections: connections, existingSegments: ck.segments)
@@ -227,7 +266,7 @@ struct KDMCLI {
           -c                     Number of parallel connections (default: 8)
           -o                     Destination directory (default: current directory)
           --pause-after <sec>    Pause download after given seconds and save checkpoint
-          --checkpoint-file <p>  Path to save checkpoint file
+          --checkpoint-file <p>  Keep a crash-safe checkpoint at this path (written every 2 s / 16 MiB)
         """)
     }
 }
