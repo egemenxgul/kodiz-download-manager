@@ -13,14 +13,18 @@
 
 ## 🌟 Özellik Durumu
 
-### ✅ Çalışıyor (Testlerle Doğrulandı)
-- ⚡ **Yüksek Hızlı Çok Bağlantılı Motor:** 8 bağımsız `URLSession` ile gerçek TCP paralelliği (T1-T13 testleri geçti; loopback testinde Apple Silicon'da > 2 GB/s aktarım).
-- 🧩 **Dinamik Parçalama & İş Çalma (Work Stealing):** Boşa çıkan işçilerin yavaş parçaları bölerek indirmesi (T6 testi ile doğrulandı).
-- ⏯️ **Duraklatma / Sürdürme:** `If-Range` desteği ve atomik `fsync` kontrol noktalarıyla mükemmel bayt devamlılığı (T11 & T12 çökme testleri geçti).
-- 🌐 **Tek Kaynaklı Tarayıcı Eklentisi:** WXT + TypeScript Manifest V3 eklentisi (Chrome, Firefox, Safari derlemeleri hazır; dosya uzantısı/boyut filtreleme, ⌥ Option ile atlama, debounced medya algılama Vitest ile test edildi).
-- 🔌 **Native Messaging Köprüsü:** `BridgeServer`, `NativeMessagingHost` ve `SafariWebExtensionHandler` üzerinden güvenli Unix domain socket IPC iletişimi.
-- 💾 **Kalıcılık & Çerez Yönetimi:** SQLite + GRDB kontrol noktası deposu, çerezler için güvenli macOS Keychain saklama.
-- 🎨 **macOS Arayüzü:** SwiftUI ana penceresi, IDM tarzı bağlantı parça tuvali (`SegmentCanvasView`), menü çubuğu (`MenuBarExtra`) ve `LSUIElement` arka plan desteği.
+### ✅ Çalışıyor (otomatik testlerle doğrulandı)
+- ⚡ **Çok bağlantılı motor:** Her bağlantı için ayrı `URLSession` (gerçek TCP paralelliği). Loopback testinde Apple Silicon'da > 2 GB/s.
+- 🧩 **Dinamik parçalama (work stealing):** Boşa çıkan bağlantı, en büyük kalan parçayı bölüp devralır.
+- 🛟 **Range desteklemeyen / boyutu bilinmeyen sunucular:** Tek akışa düşer. Bağlantı koparsa dosyayı bozmadan baştan alır.
+- ⏯️ **Duraklat / sürdür ve çökme sonrası devam:** `If-Range` doğrulaması, önce `fsync` sonra checkpoint. `kill -9` testi: 20/20 turda dosya bayt bayt doğru.
+- 🚦 **429/503 yönetimi:** `Retry-After` dikkate alınır, bağlantı sayısı otomatik düşer.
+- 💾 **Kalıcılık:** SQLite + GRDB. Çerezler veritabanında değil, macOS Keychain'de.
+
+### 🧪 Kodlandı, canlı test bekliyor
+- 🎨 **macOS arayüzü:** Menü çubuğu (`LSUIElement`), ana pencere, IDM tarzı parça çubuğu. Derleniyor, elle test edilmedi.
+- 🌐 **Tarayıcı eklentisi:** Tek kaynak WXT + TypeScript (Chrome, Firefox, Safari derlemeleri). Filtre mantığı Vitest ile test edildi; gerçek tarayıcıda yakalama denenmedi.
+- 🔌 **Native messaging köprüsü:** Unix soket IPC birim testlerle doğrulandı. Karşı taraf imza doğrulaması ancak Apple Developer Team ID ile imzalanınca güvenlik sınırı olur.
 
 ### 🔄 Geliştiriliyor
 - 🎬 **Video ve Akış İndirme:** `yt-dlp` ve `QuickJS-ng` universalleri hazırlandı (`Scripts/fetch-tools.sh`); UI format seçici ve giriş penceresi entegrasyonu devam ediyor.

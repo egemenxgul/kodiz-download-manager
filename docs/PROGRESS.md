@@ -1,7 +1,33 @@
 # Kodiz Download Manager — İlerleme Raporu (PROGRESS.md)
 
-**Son Güncelleme:** 17 Ekim 2026 (Başlangıç)
+**Son Güncelleme:** 18 Ekim 2026 (bağımsız doğrulama ve düzeltme turu)
 **Çalışma Dalı:** `fix/engine-and-bridge`
+
+---
+
+## 18 Ekim 2026 — Bağımsız doğrulama ve düzeltme turu
+
+Agent turunun ardından, test sunucusundan bağımsız bir Python Range sunucusuyla yapılan denemeler aşağıdaki hataları ortaya çıkardı. Hepsi düzeltildi ve her biri için regresyon testi eklendi.
+
+| Sorun | Kanıt (düzeltme öncesi) | Düzeltme | Test |
+|---|---|---|---|
+| Range desteksiz sunucuda bağlantı koparsa dosya sessizce bozuluyordu | Yeniden deneme Range'siz gidiyor, gelen tam gövde kalınan ofsete yazılıyordu; "tamamlandı" ama SHA farklı | Tek akışta `received > 0` iken `Range: bytes=N-`; `200` gelirse parça sıfırlanıp 0'dan yazılıyor; bilinmeyen uzunlukta bitişte `ftruncate` | T14 (eski kodda SHA uyuşmazlığıyla düşüyor) |
+| İptal edilen / erken kapanan akış parçayı "tamamlandı" işaretleyebiliyordu | `downloadSegment` normal dönünce `markCompleted` koşulsuz çağrılıyordu | `finishSegment`: yalnızca tüm baytlar geldiyse tamamlar; bitişte toplam boyut doğrulanıyor | `testFinishSegmentRejectsPartialSegment` |
+| Tarayıcıdan gelen ad mevcut dosyanın üzerine yazabiliyordu; tam yol temizlenmiyordu | `finalize()` hedefi silip taşıyordu | `sanitizedHint` + `.kodizpart`'ı da gözeten benzersiz ad; `finalize` asla silmiyor, "ad (1)" seçiyor; uygulama kuyruktaki adları da ayırıyor | T15 (eski kodda düşüyor) |
+| AIMD bağlantı sayısını düşürmüyordu, `Retry-After` okunmuyordu | `_ = recordCongestion`, sabit 1 sn | `rateLimited(retryAfter:)` (saniye veya HTTP tarihi); limitin üstündeki işçiler emekliye ayrılıyor; patlama başına tek azaltma | T4'e limit < 4 doğrulaması |
+| Checkpoint sırası | fsync sonrası okunan parça listesi, fsync'ten sonra yazılan baytları içerebiliyordu | Önce anlık görüntü, sonra fsync, sonra kayıt | `kill -9` testi |
+| LSUIElement yoktu | Ne plist'te ne `project.yml`'de | `project.yml` → `info.properties` | Derlenen paketin Info.plist'inde `LSUIElement => true` |
+| Menü çubuğundan pencere açılamayabiliyordu | Kapatılan SwiftUI `Window` `NSApp.windows` içinde aranıyordu | `openWindow(id: "main")` | Elle doğrulanmadı |
+| `media.download` hiçbir şey yapmadan `ok: true` dönüyordu | Popup başarılı gibi kapanıyordu | `ok: false` + sebep; popup sebebi gösteriyor | — |
+| Köprü, bekleyen her bağlantı için Swift iş parçacığı havuzunu kilitliyordu | `async` içinde engelleyici `read()` | İstemciler GCD eşzamanlı kuyruğunda; delegate semafor ile bekleniyor | `testIdleConnectionsDoNotBlockRequests` |
+| Karşı taraf doğrulaması yalnızca kimlik adına bakıyordu | `identifier "…"` herkesçe taklit edilebilir | İmzalı derlemede kendi Team ID'mize sabitleniyor; imzasız derlemede bunun güvenlik sınırı olmadığı kodda belirtildi | Team ID olmadan doğrulanamaz |
+| Uygulama yavaş sunucuda eklentinin 10 sn süresini aşabiliyordu (çift indirme) | Probe 15–30 sn sürebiliyordu | Tarayıcı devrinde probe bütçesi 5 sn | — |
+
+**Gerçek çökme testi (`kill -9`):** `kdm-cli get … --checkpoint-file` artık her 2 sn / 16 MiB'de checkpoint yazıyor. 200 MB dosya, 8 bağlantı, her turda 3 kez rastgele anda `kill -9` ve `kdm-cli resume`: **20/20 turda SHA eşleşti**, 18 turda checkpoint'ten devam edildi (2 turda ilk checkpoint'ten önce öldürüldüğü için baştan başladı).
+
+**Sonuçlar:** `swift test` 52/52, eklenti Vitest 17/17, `tsc` hatasız, `wxt build` chrome/firefox/safari başarılı, `xcodebuild` BUILD SUCCEEDED.
+
+**Hâlâ doğrulanmadı:** Uygulamanın arayüzü (elle), gerçek tarayıcıda yakalama, Safari, Opera/Vivaldi yolları, CI (push sonrası), notarization.
 
 ---
 
@@ -53,7 +79,7 @@
     - **E6 (İşçi yaşam döngüsü):** Delegate üzerinden kontrolsüz Task başlatma kodları tamamen temizlendi. İşçiler `withTaskGroup` altında tekil `while let seg = await planner.allocateWork() { ... }` döngüsüyle yapısal olarak yönetiliyor.
     - **E7 (Duraklat/Sürdür/İptal):** `pause()` ile tüm tamponlar yazılıp `fsync` yapılıyor ve parça durumu dışarı aktarılıyor. `resume()` kaydedilen parçalardan `If-Range` ile oturumları tazeleyerek devam ediyor. `cancel()` `.kodizpart` dosyasını siliyor.
     - **E8 (Başlıklar & Çerezler):** `DownloadRequestOptions` yapısı eklendi; User-Agent, Referer, domain/path/secure eşleşmeli Cookie başlığı ve `Accept-Encoding: identity` hem probe hem tüm işçi isteklerine aktarıldı.
-    - **E9 (AIMD & Hız Sınırı):** 429/503 yanıtlarında `AIMDController.recordCongestion` çağrılarak bağlantı sayısı düşürülüyor. `RateLimiter` tampon yazılmadan önce token çekiyor.
+    - **E9 (AIMD & Hız Sınırı):** İlk sürümde `recordCongestion` sonucu kullanılmıyordu; bağlantı sayısı gerçekte 18 Ekim turunda düşürülmeye başlandı. `RateLimiter` tampon yazılmadan önce token çekiyor.
     - **DownloadCheckpointSink:** Motor GRDB'den bağımsızlaştırıldı, protokol tabanlı checkpoint (2 sn veya 16 MiB) altyapısı kuruldu.
     - **Bitiş & Metadata:** Dosya bitiminde `fsync` ve atomik dosya adı değişikliği yapılıyor. `kdm-cli` yeni motora ve `FileMetadata` karantina/WhereFroms/Dock zıplatma çağrılarına uyarlandı.
   - **Çalıştırılan Testler & Kanıt:**
@@ -71,7 +97,7 @@
         - T9 (gzip-force) -> identity gönderildiği için ofsetler bozulmadı, SHA eşleşti (0.37s)
         - T10 (disposition & çakışma) -> "Türkçe dosya.zip" ve "Türkçe dosya (1).zip" üretildi (0.13s)
         - T11 (pause -> resume bayt doğrulaması) -> sunucu tarafında indirilen baytlar mükerrer indirilmedi (2.45s)
-        - T12 (çökme & resume simülasyonu) -> SHA eşleşti (2.81s)
+        - T12 (pause → resume simülasyonu; gerçek `kill -9` değildir, bkz. 18 Ekim turu) -> SHA eşleşti (2.81s)
         - T13 (loopback performans):
           - Debug: 92.92 MB/s
           - Release (`-c release`, Apple Silicon loopback): **2365.53 MB/s** (256 MB in 0.108s, hedef: ≥ 300 MB/s, 7.8 kat aşıldı).
@@ -92,7 +118,7 @@
       - Aktif indirme varken `SleepBlocker` (IOPMAssertion) ile Mac'in uyuması engelleniyor; indirmeler bitince serbest bırakılıyor.
       - Bitişte `FileMetadata` (`applyQuarantine`, `applyWhereFroms`, `notifyDockDownloadsBounce`) tetikleniyor.
     - **A2 (Arayüz Temizliği):** `KodizApp.swift` ve `MainWindowView.swift` içindeki tüm sahte/mock veriler kaldırıldı. Toolbar ve sağ tık menüsündeki tüm eylemler (`Duraklat`, `Sürdür`, `Sil`, `Dosyayla Sil`, `Finder'da Göster`, `Aç`, `URL'yi Kopyala`) `DownloadManager`'a bağlandı. Detay penceresi ve IDM tarzı parça tuvali (`SegmentCanvasView`) gerçek zamanlı verilere bağlandı.
-    - **A4 (LSUIElement & Yaşam Döngüsü):** `Info.plist`'e `LSUIElement = YES` eklendi. `AppDelegate` ilk açılışta ana pencereyi açıp `hasLaunchedBefore` bayrağını kaydediyor; sonraki açılışlarda menü çubuğunda kalıyor (`.accessory`). Pencere açılınca `.regular`, kapanınca `.accessory` politikası uygulanıyor.
+    - **A4 (LSUIElement & Yaşam Döngüsü):** İlk turda `Info.plist`'e eklendi sanıldı ama XcodeGen dosyayı yeniden üretip sildi; 18 Ekim turunda `project.yml` → `info.properties` üzerinden kalıcı olarak eklendi. `AppDelegate` ilk açılışta ana pencereyi açıp `hasLaunchedBefore` bayrağını kaydediyor; sonraki açılışlarda menü çubuğunda kalıyor (`.accessory`). Pencere açılınca `.regular`, kapanınca `.accessory` politikası uygulanıyor.
   - **Çalıştırılan Testler & Kanıt:**
     - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path Packages/KodizKit --filter "StoreTests" --scratch-path /tmp/kodiz-kk-build`
       - Sonuç: 3/3 test başarılı (testCheckpointSinkAndSegmentFetching, testDatabaseInitializationAndMigrations, testSaveAndFetchDownload).
@@ -123,7 +149,7 @@
     - **A3 & K1 Birlikte Çözümü:** `AppDelegate.handleBridgeMessage` içinde `download.add` isteği geldiğinde dosya önce SQLite veritabanına kaydedilip kuyruğa ekleniyor; ardından eklentiye gerçek `downloadId` ve `ok: true` yanıtı dönülüyor. Hata durumunda `ok: false, reason: ...` dönülerek tarayıcının indirmeyi iptal etmesi engelleniyor.
     - **NMH Uygulama Başlatma (K4):** `NativeMessagingHost.swift` stdin/stdout çerçevelemesini düşük seviyeli okuma/yazma döngüleriyle yapıyor. Soket bulunamadığında (uygulama kapalıyken) `NSWorkspace.shared.openApplication(at:configuration:)` ile uygulamayı arka planda (`activates = false`, `--background`) başlatıyor ve soketi 8 saniyeye kadar yokluyor. `hello` mesajı için uygulama gereksiz yere başlatılmıyor.
     - **Manifest Kurucu (NativeHostInstaller):** Chrome, Canary, Chromium, Brave, Edge, Opera, Vivaldi ve Firefox için JSON manifestleri `~/Library/Application Support/.../NativeMessagingHosts` klasörlerine yazan `NativeHostInstaller` uygulandı. Opera ve Vivaldi hem kendi yollarına hem Chrome yoluna yazılarak belgelendi.
-    - **Sabit Chromium Kimliği:** RSA-2048 anahtar çifti üretildi (`/tmp/kodiz-keys/kodiz_extension_private.pem`). Base64 DER açık anahtarı manifest'e ve eklenti yapılandırmasına eklendi. Türetilen Extension ID: `clcoapdgcnijgajpkdplenikocmfpdfg`. Özel anahtar repoya konulmadı (`.gitignore` koruması altında).
+    - **Sabit Chromium Kimliği:** RSA-2048 anahtar çifti üretildi (`~/.kodiz-keys/kodiz_extension_private.pem (izin 600, depo dışında)`). Base64 DER açık anahtarı manifest'e ve eklenti yapılandırmasına eklendi. Türetilen Extension ID: `clcoapdgcnijgajpkdplenikocmfpdfg`. Özel anahtar repoya konulmadı (`.gitignore` koruması altında).
     - **Safari Appex (K5):** `SafariExtension.entitlements` dosyasına `com.apple.security.app-sandbox = true` ve `application-groups` eklendi. `SafariWebExtensionHandler.swift` gelen mesajı Unix soketine iletiyor, gerekirse uygulamayı arka planda açıyor ve gerçek yanıtı Safari'ye döndürüyor.
   - **Çalıştırılan Testler & Kanıt:**
     - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path Packages/KodizKit --filter "BridgeProtocolTests" --scratch-path /tmp/kodiz-kk-build`
@@ -210,7 +236,7 @@
 2. **Notarization & Kod İmzalama:**
    - Uygulamanın Gatekeeper uyarısı vermeden harici dağıtılabilmesi için Developer ID Application sertifikası ile `xcrun notarytool submit` yapılması gerekmektedir.
 3. **Chromium Eklentisi Özel Anahtarı:**
-   - RSA-2048 açık anahtarı manifest'e gömülmüş ve sabit ID (`clcoapdgcnijgajpkdplenikocmfpdfg`) elde edilmiştir. Özel anahtar (`/tmp/kodiz-keys/kodiz_extension_private.pem`) güvenlik nedeniyle repoya eklenmemiştir (`.gitignore` korumalı). Proje sahibinin bu anahtarı güvenli bir parola yöneticisinde / CI Secrets'ta saklaması gerekir.
+   - RSA-2048 açık anahtarı manifest'e gömülmüş ve sabit ID (`clcoapdgcnijgajpkdplenikocmfpdfg`) elde edilmiştir. Özel anahtar (`~/.kodiz-keys/kodiz_extension_private.pem (izin 600, depo dışında)`) güvenlik nedeniyle repoya eklenmemiştir (`.gitignore` korumalı). Proje sahibinin bu anahtarı güvenli bir parola yöneticisinde / CI Secrets'ta saklaması gerekir.
 4. **Opera ve Vivaldi NMH Yolları:**
    - Bu iki tarayıcı yerel test ortamında kurulu olmadığı için hem Chrome hem de kendi varsayılan klasörlerine yazılmıştır. Kullanıcı kurulu ortamda test edip teyit etmelidir.
 
