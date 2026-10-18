@@ -85,6 +85,27 @@ final class EngineTests: XCTestCase {
 
     // MARK: - New SegmentPlanner Tests
 
+    func testFinishSegmentRejectsPartialSegment() async {
+        let planner = SegmentPlanner(totalBytes: 4 * 1024 * 1024, initialConnections: 1)
+        let seg = await planner.allocateWork()!
+        await planner.updateProgress(segmentIdx: seg.idx, additionalBytes: 1024)
+
+        // A cancelled/short stream must not be marked completed
+        let finishedEarly = await planner.finishSegment(segmentIdx: seg.idx)
+        XCTAssertFalse(finishedEarly)
+
+        await planner.updateProgress(segmentIdx: seg.idx, additionalBytes: 4 * 1024 * 1024 - 1024)
+        let finished = await planner.finishSegment(segmentIdx: seg.idx)
+        XCTAssertTrue(finished)
+    }
+
+    func testSanitizedHint() {
+        XCTAssertEqual(FileNameParser.sanitizedHint("/Users/x/Downloads/a.zip"), "a.zip")
+        XCTAssertEqual(FileNameParser.sanitizedHint("../../.bashrc"), "bashrc")
+        XCTAssertEqual(FileNameParser.sanitizedHint(""), "download")
+    }
+
+
     func testFailedSegmentReallocation() async {
         let planner = SegmentPlanner(totalBytes: 10 * 1024 * 1024, initialConnections: 2)
         let work = await planner.allocateWork()

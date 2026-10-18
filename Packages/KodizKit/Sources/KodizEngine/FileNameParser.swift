@@ -112,7 +112,17 @@ public enum FileNameParser {
     }
 
     /// Generates next collision-free name: "name (1).ext"
-    public static func uniqueFileName(destDir: URL, preferredName: String) -> String {
+    /// Turns a browser/user supplied hint (which may be a full path) into a safe file name
+    public static func sanitizedHint(_ hint: String) -> String {
+        let lastComponent = hint.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init) ?? hint
+        var name = sanitize(lastComponent)
+        // Hidden or relative names ("..", ".bashrc") are not acceptable download names
+        while name.hasPrefix(".") { name.removeFirst() }
+        return name.isEmpty ? "download" : name
+    }
+
+    /// Returns a name for which neither the final file nor (if `includeTempFiles`) its `.kodizpart` exists
+    public static func uniqueFileName(destDir: URL, preferredName: String, includeTempFiles: Bool = true) -> String {
         let fileManager = FileManager.default
         let ext = (preferredName as NSString).pathExtension
         let base = (preferredName as NSString).deletingPathExtension
@@ -121,7 +131,12 @@ public enum FileNameParser {
         var candidate = preferredName
         var counter = 1
 
-        while fileManager.fileExists(atPath: destDir.appendingPathComponent(candidate).path) {
+        func isTaken(_ name: String) -> Bool {
+            fileManager.fileExists(atPath: destDir.appendingPathComponent(name).path)
+                || (includeTempFiles && fileManager.fileExists(atPath: destDir.appendingPathComponent(name + ".kodizpart").path))
+        }
+
+        while isTaken(candidate) {
             candidate = "\(base) (\(counter))\(extSuffix)"
             counter += 1
         }

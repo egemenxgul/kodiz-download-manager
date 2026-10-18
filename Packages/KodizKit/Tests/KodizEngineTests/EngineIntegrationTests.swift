@@ -4,12 +4,27 @@ import Foundation
 
 actor TestDownloadObserver: DownloadEngineDelegate {
     private var completionContinuation: CheckedContinuation<Result<URL, Error>, Never>?
+    private var result: Result<URL, Error>?
     public var lastProgress: DownloadProgress?
 
-    func waitForCompletion() async -> Result<URL, Error> {
-        await withCheckedContinuation { cont in
+    /// Waits for the engine to finish; fails instead of hanging the suite after `timeout` seconds
+    func waitForCompletion(timeout: TimeInterval = 90) async -> Result<URL, Error> {
+        if let result { return result }
+        return await withCheckedContinuation { cont in
             self.completionContinuation = cont
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                self.finish(.failure(DownloadError.unknown("Test zaman aşımı (\(Int(timeout)) sn)")))
+            }
         }
+    }
+
+    private func finish(_ outcome: Result<URL, Error>) {
+        guard result == nil else { return }
+        result = outcome
+        let cont = completionContinuation
+        completionContinuation = nil
+        cont?.resume(returning: outcome)
     }
 
     func downloadDidUpdateProgress(_ progress: DownloadProgress) async {
@@ -17,15 +32,11 @@ actor TestDownloadObserver: DownloadEngineDelegate {
     }
 
     func downloadDidComplete(finalURL: URL) async {
-        let cont = completionContinuation
-        completionContinuation = nil
-        cont?.resume(returning: .success(finalURL))
+        finish(.success(finalURL))
     }
 
     func downloadDidFail(error: Error) async {
-        let cont = completionContinuation
-        completionContinuation = nil
-        cont?.resume(returning: .failure(error))
+        finish(.failure(error))
     }
 }
 
@@ -153,6 +164,8 @@ final class EngineIntegrationTests: XCTestCase {
         case .success(let finalURL):
             let fileSHA = try DeterministicData.fileSHA256(at: finalURL)
             XCTAssertEqual(fileSHA, expectedSHA, "T4: ratelimit download must finish and SHA match")
+            let limit = await engine.connectionLimit()
+            XCTAssertLessThan(limit, 4, "T4: 429/503 must shrink the AIMD connection limit")
         case .failure(let err):
             XCTFail("T4 failed with error: \(err)")
         }
@@ -353,6 +366,50 @@ final class EngineIntegrationTests: XCTestCase {
             return
         }
         XCTAssertEqual(file2.lastPathComponent, "Türkçe dosya (1).zip")
+    }
+
+    // T14: Range desteksiz sunucuda bağlantı ortada koparsa baştan başlanır, dosya bozulmaz
+    func testT14_NoRangeDropRestartsFromZero() async throws {
+        let size: Int64 = 8 * 1024 * 1024
+        let expectedSHA = DeterministicData.sha256(totalBytes: size)
+        let url = URL(string: "http://127.0.0.1:\(serverPort)/norange-flaky?size=\(size)")!
+
+        let observer = TestDownloadObserver()
+        let engine = DownloadEngine(url: url, destinationDirectory: testBaseDir, delegate: observer)
+        _ = Task { try await engine.start(connections: 8) }
+
+        let result = await observer.waitForCompletion()
+        guard case .success(let finalURL) = result else {
+            XCTFail("T14 failed: \(result)")
+            return
+        }
+        XCTAssertEqual(try DeterministicData.fileSHA256(at: finalURL), expectedSHA, "T14: restarted single stream must not corrupt the file")
+    }
+
+    // T15: Tarayıcıdan gelen ad (tam yol olsa bile) mevcut bir dosyanın üzerine yazmaz
+    func testT15_HintNeverOverwritesExistingFile() async throws {
+        let size: Int64 = 1024 * 1024
+        let existing = testBaseDir.appendingPathComponent("rapor.bin")
+        try Data("kullanıcının dosyası".utf8).write(to: existing)
+
+        let url = URL(string: "http://127.0.0.1:\(serverPort)/range?size=\(size)")!
+        let observer = TestDownloadObserver()
+        let engine = DownloadEngine(
+            url: url,
+            destinationDirectory: testBaseDir,
+            preferredFileName: "/Users/someone/Downloads/rapor.bin",
+            delegate: observer
+        )
+        _ = Task { try await engine.start(connections: 2) }
+
+        let result = await observer.waitForCompletion()
+        guard case .success(let finalURL) = result else {
+            XCTFail("T15 failed: \(result)")
+            return
+        }
+        XCTAssertEqual(finalURL.lastPathComponent, "rapor (1).bin")
+        XCTAssertEqual(finalURL.deletingLastPathComponent().standardizedFileURL, testBaseDir.standardizedFileURL)
+        XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "kullanıcının dosyası")
     }
 
     // T11: pause → resume → SHA eşleşir, daha önce inen baytlar tekrar indirilmez (sunucu tarafında sayılan baytla doğrula)

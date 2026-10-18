@@ -200,6 +200,23 @@ public actor SegmentPlanner {
         segments[index].workerId = nil
     }
 
+    /// Completes a segment only if all of its bytes arrived. Open-ended segments complete at EOF.
+    /// Returns false when the stream ended early (e.g. cancelled or closed before the boundary).
+    public func finishSegment(segmentIdx: Int) -> Bool {
+        guard let index = segments.firstIndex(where: { $0.idx == segmentIdx }) else { return false }
+        let seg = segments[index]
+        guard seg.end < 0 || seg.received >= (seg.end - seg.start + 1) else { return false }
+        segments[index].state = .completed
+        segments[index].workerId = nil
+        return true
+    }
+
+    /// Restarts a segment from its first byte (server ignored Range on a resumed single stream)
+    public func resetProgress(segmentIdx: Int) {
+        guard let index = segments.firstIndex(where: { $0.idx == segmentIdx }) else { return }
+        segments[index].received = 0
+    }
+
     /// Marks a segment as failed with retry or fatal decision (Fixes E3)
     public func markFailed(segmentIdx: Int, error: Error, retryAfter: TimeInterval? = nil) -> SegmentFailureAction {
         guard let index = segments.firstIndex(where: { $0.idx == segmentIdx }) else {

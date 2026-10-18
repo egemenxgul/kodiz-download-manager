@@ -38,7 +38,12 @@ public struct ProbeResult: Sendable {
 }
 
 public actor DownloadProbe {
-    public init() {}
+    private let timeout: TimeInterval
+
+    /// - Parameter timeout: Total time budget for the probe (browser hand-offs need a short one)
+    public init(timeout: TimeInterval = 30) {
+        self.timeout = timeout
+    }
 
     public func probe(
         url: URL,
@@ -74,8 +79,8 @@ public actor DownloadProbe {
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        config.timeoutIntervalForRequest = 15.0
-        config.timeoutIntervalForResource = 30.0
+        config.timeoutIntervalForRequest = min(15.0, timeout)
+        config.timeoutIntervalForResource = timeout
 
         let session = URLSession(configuration: config, delegate: probeDelegate, delegateQueue: nil)
 

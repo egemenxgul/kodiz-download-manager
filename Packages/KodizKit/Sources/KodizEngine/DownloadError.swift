@@ -12,6 +12,7 @@ public enum DownloadError: Error, Sendable, LocalizedError, Equatable {
     case rangeNotSatisfiable // 416
     case maxAttemptsExceeded(segmentIdx: Int)
     case serverError(statusCode: Int)
+    case rateLimited(statusCode: Int, retryAfter: TimeInterval?) // 429 / 503
     case serverDoesNotSupportRange
     case networkError(String)
     case cancelled
@@ -43,6 +44,8 @@ public enum DownloadError: Error, Sendable, LocalizedError, Equatable {
             return "Parça \(idx) için en fazla deneme sayısı (10) aşıldı."
         case .serverError(let code):
             return "Sunucu hatası: HTTP \(code)."
+        case .rateLimited(let code, _):
+            return "Sunucu istekleri sınırlıyor: HTTP \(code)."
         case .serverDoesNotSupportRange:
             return "Sunucu Range desteği sağlamıyor."
         case .networkError(let msg):

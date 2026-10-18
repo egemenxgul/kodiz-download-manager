@@ -327,6 +327,16 @@ public final class TestHTTPServer: @unchecked Sendable {
         case "/norange":
             await handleNoRange(connection: connection, request: request, totalSize: sizeParam)
 
+        case "/norange-flaky":
+            // No Range support; the first download request (after the probe) drops halfway
+            let attempt = await stats.getFlakyAttempt(for: "norange-flaky")
+            await handleNoRange(
+                connection: connection,
+                request: request,
+                totalSize: sizeParam,
+                dropAfter: attempt == 2 ? sizeParam / 2 : nil
+            )
+
         case "/unknown-length":
             await handleUnknownLength(connection: connection, request: request, totalSize: sizeParam)
 
@@ -482,7 +492,7 @@ public final class TestHTTPServer: @unchecked Sendable {
         }
     }
 
-    private func handleNoRange(connection: NWConnection, request: HTTPParsedRequest, totalSize: Int64) async {
+    private func handleNoRange(connection: NWConnection, request: HTTPParsedRequest, totalSize: Int64, dropAfter: Int64? = nil) async {
         // Ignores Range header completely, returns 200 OK without Accept-Ranges
         let headers: [String: String] = [
             "Content-Type": "application/octet-stream",
@@ -496,8 +506,9 @@ public final class TestHTTPServer: @unchecked Sendable {
             statusText: "OK",
             headers: headers,
             offset: 0,
-            totalBytesToSend: Int(totalSize),
-            seed: DeterministicData.defaultSeed
+            totalBytesToSend: Int(dropAfter ?? totalSize),
+            seed: DeterministicData.defaultSeed,
+            closeAtEnd: dropAfter != nil
         )
     }
 

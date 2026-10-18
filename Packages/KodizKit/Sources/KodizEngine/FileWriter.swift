@@ -73,13 +73,21 @@ public actor FileWriter {
         close(fileDescriptor)
         fileDescriptor = -1
 
-        let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: targetURL.path) {
-            try fileManager.removeItem(at: targetURL)
-        }
+        // Never replace a file that appeared at the target meanwhile: pick "name (1).ext" instead
+        let destDir = targetURL.deletingLastPathComponent()
+        let finalName = FileNameParser.uniqueFileName(destDir: destDir, preferredName: targetURL.lastPathComponent, includeTempFiles: false)
+        let finalURL = destDir.appendingPathComponent(finalName)
 
-        try fileManager.moveItem(at: tempURL, to: targetURL)
-        return targetURL
+        try FileManager.default.moveItem(at: tempURL, to: finalURL)
+        return finalURL
+    }
+
+    /// Truncates the temp file (unknown-length downloads restarted from byte 0)
+    public func truncate(to length: Int64) throws {
+        guard fileDescriptor >= 0 else { throw POSIXError(.EBADF) }
+        if ftruncate(fileDescriptor, off_t(length)) != 0 {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     public func closeWithoutFinalizing() {

@@ -61,6 +61,7 @@ public actor DownloadEngine: ConnectionWorkerDelegate {
     private var workerSpeeds: [Int: Double] = [:]
     private var fatalError: Error?
     private var isSingleStream: Bool = false
+    private var lastCongestionAt: Date = .distantPast
 
     public init(
         id: UUID = UUID(),
@@ -131,8 +132,14 @@ public actor DownloadEngine: ConnectionWorkerDelegate {
 
         self.totalBytes = probe.totalBytes
 
-        if self.fileName == "download" || self.fileName.isEmpty {
-            self.fileName = FileNameParser.uniqueFileName(destDir: destinationDirectory, preferredName: probe.suggestedFileName)
+        // A resumed download keeps its reserved name; a new one never reuses an existing file
+        let isResume = !(existingSegments ?? []).isEmpty
+        if !isResume {
+            let hint = (self.fileName == "download" || self.fileName.isEmpty) ? probe.suggestedFileName : self.fileName
+            self.fileName = FileNameParser.uniqueFileName(
+                destDir: destinationDirectory,
+                preferredName: FileNameParser.sanitizedHint(hint)
+            )
         }
 
         // 2. Determine download mode: Multi-segment vs Single-stream
@@ -194,6 +201,11 @@ public actor DownloadEngine: ConnectionWorkerDelegate {
             // Check if any fatal error stopped the download
             if fatalError != nil { break }
 
+            // AIMD: workers above the current connection limit retire (worker 0 always stays)
+            if workerId > 0, let aimd = self.aimd, workerId >= (await aimd.currentConnections) {
+                break
+            }
+
             guard let segment = await planner.allocateWork(workerId: workerId) else {
                 // If all segments completed, exit worker loop
                 if await planner.isAllCompleted {
@@ -223,16 +235,21 @@ public actor DownloadEngine: ConnectionWorkerDelegate {
                     rateLimiter: rateLimiter,
                     isSingleStream: isSingleStream
                 )
-                await planner.markCompleted(segmentIdx: segment.idx)
+                if isPaused || !isRunning { break }
+                // A stream that stopped before its last byte is a failure, never a completion
+                guard await planner.finishSegment(segmentIdx: segment.idx) else {
+                    throw DownloadError.networkError("Bağlantı parça bitmeden kapandı")
+                }
             } catch {
                 if isPaused || !isRunning { break }
 
-                // Check for server error retry-after or congestion
+                // 429/503: honor Retry-After and shrink the connection count once per burst
                 var retryAfter: TimeInterval? = nil
-                if case let DownloadError.serverError(code) = error {
-                    if code == 429 || code == 503 {
-                        retryAfter = 1.0
-                        _ = await aimd?.recordCongestion(retryAfterSeconds: 1.0)
+                if case let DownloadError.rateLimited(_, after) = error {
+                    retryAfter = after ?? 1.0
+                    if Date().timeIntervalSince(lastCongestionAt) >= 1.0 {
+                        lastCongestionAt = Date()
+                        _ = await aimd?.recordCongestion(retryAfterSeconds: retryAfter)
                     }
                 }
 
@@ -265,12 +282,21 @@ public actor DownloadEngine: ConnectionWorkerDelegate {
         if await planner.isAllCompleted {
             isRunning = false
             do {
+                let finalDownloaded = await planner.totalDownloaded
+                let finalSegments = await planner.segments
+
+                if let expected = totalBytes, finalDownloaded != expected {
+                    throw DownloadError.badServerResponse("İndirilen \(finalDownloaded) bayt, beklenen \(expected) bayt")
+                }
+                if totalBytes == nil {
+                    // Unknown length: drop any stale tail left by an earlier attempt
+                    try await writer.truncate(to: finalDownloaded)
+                }
+
                 // Step 1: fsync to disk
                 try await writer.sync()
 
                 // Step 2: Final checkpoint
-                let finalDownloaded = await planner.totalDownloaded
-                let finalSegments = await planner.segments
                 try? await checkpointSink?.checkpoint(id: id, segments: finalSegments, downloadedBytes: finalDownloaded)
 
                 // Step 3: Atomic rename from .kodizpart to target file
@@ -303,11 +329,13 @@ public actor DownloadEngine: ConnectionWorkerDelegate {
 
         // 1. Checkpoint condition: every 2.0s or 16 MiB
         if now.timeIntervalSince(lastCheckpointTime) >= 2.0 || bytesSinceCheckpoint >= 16 * 1024 * 1024 {
-            try? await fileWriter?.sync()
+            // Snapshot first, then fsync: the checkpoint never claims bytes that are not on disk
             if let planner = self.planner {
                 let segs = await planner.segments
                 let downloaded = await planner.totalDownloaded
-                try? await checkpointSink?.checkpoint(id: id, segments: segs, downloadedBytes: downloaded)
+                if (try? await fileWriter?.sync()) != nil {
+                    try? await checkpointSink?.checkpoint(id: id, segments: segs, downloadedBytes: downloaded)
+                }
             }
             lastCheckpointTime = now
             bytesSinceCheckpoint = 0
@@ -345,15 +373,13 @@ public actor DownloadEngine: ConnectionWorkerDelegate {
         }
         workers.removeAll()
 
-        // Sync to disk
-        try? await fileWriter?.sync()
-
-        // Checkpoint sink
+        // Snapshot, then sync, then checkpoint
         var savedSegments: [Segment] = []
         if let planner = self.planner {
             await planner.resetDownloadingToPending()
             savedSegments = await planner.segments
             let downloaded = await planner.totalDownloaded
+            try? await fileWriter?.sync()
             try? await checkpointSink?.checkpoint(id: id, segments: savedSegments, downloadedBytes: downloaded)
         }
 
@@ -373,6 +399,11 @@ public actor DownloadEngine: ConnectionWorkerDelegate {
         // Remove .kodizpart
         await fileWriter?.deleteTempFile()
         fileWriter = nil
+    }
+
+    /// Current AIMD connection limit (for UI and tests)
+    public func connectionLimit() async -> Int {
+        await aimd?.currentConnections ?? 0
     }
 
     public func getSegments() async -> [Segment] {

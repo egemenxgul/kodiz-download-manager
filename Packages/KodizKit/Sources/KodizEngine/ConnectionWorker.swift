@@ -73,6 +73,10 @@ public actor ConnectionWorker {
             } else if let lastMod = lastModified {
                 request.setValue(lastMod, forHTTPHeaderField: "If-Range")
             }
+        } else if currentOffset > segment.start {
+            // Resumed single stream: ask for the remainder. A 200 reply means the server
+            // ignored Range (or the file changed) and the stream must restart from byte 0.
+            request.setValue("bytes=\(currentOffset)-", forHTTPHeaderField: "Range")
         }
 
         // Headers from options
@@ -127,21 +131,30 @@ public actor ConnectionWorker {
             }
 
             // Verify Content-Range header
-            if let cr = response.value(forHTTPHeaderField: "Content-Range") {
-                if let rangeSpec = cr.split(separator: " ").last,
-                   let byteRange = rangeSpec.split(separator: "/").first {
-                    let parts = byteRange.split(separator: "-")
-                    if let startStr = parts.first, let startOffset = Int64(startStr) {
-                        if startOffset != currentOffset {
-                            session.invalidateAndCancel()
-                            throw DownloadError.badServerResponse("Content-Range start \(startOffset) does not match requested offset \(currentOffset)")
-                        }
-                    }
-                }
+            if let startOffset = Self.contentRangeStart(response), startOffset != currentOffset {
+                session.invalidateAndCancel()
+                throw DownloadError.badServerResponse("Content-Range start \(startOffset) does not match requested offset \(currentOffset)")
             }
         } else {
             // Single stream mode
-            guard statusCode == 200 || statusCode == 206 else {
+            switch statusCode {
+            case 206:
+                guard Self.contentRangeStart(response) == currentOffset else {
+                    session.invalidateAndCancel()
+                    throw DownloadError.badServerResponse("Content-Range does not match resume offset \(currentOffset)")
+                }
+            case 200:
+                if currentOffset > segment.start {
+                    // Never append a full body at the resume offset: start over from byte 0
+                    if let total = planner.totalBytes, response.expectedContentLength > 0,
+                       response.expectedContentLength != total {
+                        session.invalidateAndCancel()
+                        throw DownloadError.fileChanged
+                    }
+                    await planner.resetProgress(segmentIdx: segment.idx)
+                    currentOffset = segment.start
+                }
+            default:
                 session.invalidateAndCancel()
                 throw mapHTTPError(response: response)
             }
@@ -260,8 +273,33 @@ public actor ConnectionWorker {
         case 401: return .unauthorized
         case 403: return .forbidden
         case 416: return .rangeNotSatisfiable
+        case 429, 503:
+            return .rateLimited(statusCode: response.statusCode, retryAfter: Self.retryAfterSeconds(response))
         default: return .serverError(statusCode: response.statusCode)
         }
+    }
+
+    /// Start offset of a `Content-Range: bytes <start>-<end>/<total>` header
+    static func contentRangeStart(_ response: HTTPURLResponse) -> Int64? {
+        guard let cr = response.value(forHTTPHeaderField: "Content-Range"),
+              let rangeSpec = cr.split(separator: " ").last,
+              let byteRange = rangeSpec.split(separator: "/").first,
+              let startStr = byteRange.split(separator: "-").first else { return nil }
+        return Int64(startStr)
+    }
+
+    /// `Retry-After` as delta-seconds or HTTP-date
+    static func retryAfterSeconds(_ response: HTTPURLResponse) -> TimeInterval? {
+        guard let value = response.value(forHTTPHeaderField: "Retry-After")?.trimmingCharacters(in: .whitespaces) else {
+            return nil
+        }
+        if let seconds = TimeInterval(value) { return max(0, seconds) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        guard let date = formatter.date(from: value) else { return nil }
+        return max(0, date.timeIntervalSinceNow)
     }
 
     private func updateSpeed() {
