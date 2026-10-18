@@ -27,7 +27,9 @@ Agent turunun ardından, test sunucusundan bağımsız bir Python Range sunucusu
 
 **Sonuçlar:** `swift test` 52/52, eklenti Vitest 17/17, `tsc` hatasız, `wxt build` chrome/firefox/safari başarılı, `xcodebuild` BUILD SUCCEEDED.
 
-**Hâlâ doğrulanmadı:** Uygulamanın arayüzü (elle), gerçek tarayıcıda yakalama, Safari, Opera/Vivaldi yolları, CI (push sonrası), notarization.
+**CI:** GitHub Actions ilk kez yeşil (commit `955a014`, Xcode 26.3). Yol boyunca düzeltilenler: T13 hız eşiği artık isteğe bağlı (`KODIZ_PERF_MIN_MBPS`), `@main` dosya adları, temiz klonda `wxt prepare`.
+
+**Hâlâ doğrulanmadı:** Uygulamanın arayüzü (elle), gerçek tarayıcıda yakalama, Safari, Opera/Vivaldi yolları, notarization.
 
 ---
 
