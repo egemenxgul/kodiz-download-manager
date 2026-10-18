@@ -161,6 +161,41 @@ final class BridgeProtocolTests: XCTestCase {
     }
 
     // Bridge Server: Delayed delegate response (slow processing)
+    /// Idle browser connections (blocked in read) must not delay other requests
+    func testIdleConnectionsDoNotBlockRequests() async throws {
+        let server = BridgeServer(
+            socketPath: testSocketPath,
+            delegate: MockBridgeDelegate(),
+            peerValidator: AllowAllPeerValidator()
+        )
+        try server.start()
+        defer { server.stop() }
+
+        // More idle connections than CPU cores (= Swift cooperative pool size)
+        var idleFds: [Int32] = []
+        defer { idleFds.forEach { close($0) } }
+        for _ in 0..<(ProcessInfo.processInfo.activeProcessorCount * 2) {
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            withUnsafeMutableBytes(of: &addr.sun_path) { ptr in
+                testSocketPath.withCString { ptr.baseAddress?.copyMemory(from: $0, byteCount: strlen($0) + 1) }
+            }
+            let res = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            }
+            XCTAssertEqual(res, 0)
+            idleFds.append(fd)
+        }
+
+        let client = UnixSocketClient(socketPath: testSocketPath)
+        let data = try JSONEncoder().encode(BridgeMessage(id: "after-idle", type: "hello"))
+        let start = Date()
+        let response = try JSONDecoder().decode(BridgeResponse.self, from: try await client.sendRequest(data))
+        XCTAssertEqual(response.id, "after-idle")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0)
+    }
+
     func testDelayedDelegateResponse() async throws {
         let delegate = MockBridgeDelegate()
         delegate.delayNanoseconds = 150_000_000 // 150ms delay

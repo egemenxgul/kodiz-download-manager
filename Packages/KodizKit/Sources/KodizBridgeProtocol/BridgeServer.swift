@@ -37,8 +37,16 @@ public struct MacPeerValidator: BridgePeerValidator {
             return false
         }
 
-        // Must match our Team ID or approved bundle identifiers
-        let reqString = "identifier \"dev.kodiz.NativeHost\" or identifier \"dev.kodiz.DownloadManager.SafariExtension\" or identifier \"dev.kodiz.DownloadManager\""
+        let identifiers = "(identifier \"dev.kodiz.NativeHost\" or identifier \"dev.kodiz.DownloadManager.SafariExtension\" or identifier \"dev.kodiz.DownloadManager\")"
+        let reqString: String
+        if let teamID = Self.ownTeamIdentifier {
+            // Signed build: the peer must be signed by the same Apple Developer team
+            reqString = "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\" and \(identifiers)"
+        } else {
+            // Unsigned / ad-hoc build: an identifier check only. Anyone can ad-hoc sign a binary
+            // with these identifiers, so this is NOT a security boundary until the app has a Team ID.
+            reqString = identifiers
+        }
         var secReq: SecRequirement?
         guard SecRequirementCreateWithString(reqString as CFString, [], &secReq) == errSecSuccess,
               let req = secReq else {
@@ -48,6 +56,20 @@ public struct MacPeerValidator: BridgePeerValidator {
         let checkStatus = SecCodeCheckValidity(code, [], req)
         return checkStatus == errSecSuccess
     }
+}
+
+extension MacPeerValidator {
+    /// Team ID from this process's own code signature (nil for unsigned / ad-hoc builds)
+    static let ownTeamIdentifier: String? = {
+        var selfCode: SecCode?
+        guard SecCodeCopySelf([], &selfCode) == errSecSuccess, let code = selfCode else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let sCode = staticCode else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(sCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return nil }
+        return dict[kSecCodeInfoTeamIdentifier as String] as? String
+    }()
 }
 
 public struct AllowAllPeerValidator: BridgePeerValidator {
@@ -62,6 +84,9 @@ public final class BridgeServer: @unchecked Sendable {
     private var serverFd: Int32 = -1
     private var isRunning: Bool = false
     private let queue = DispatchQueue(label: "dev.kodiz.BridgeServer", qos: .userInitiated)
+    // Client sockets use blocking reads (up to the 10 s timeout). They run on GCD threads,
+    // never on Swift's cooperative pool, so idle browser connections cannot starve the engine.
+    private let clientQueue = DispatchQueue(label: "dev.kodiz.BridgeServer.clients", qos: .userInitiated, attributes: .concurrent)
 
     public init(
         socketPath: String? = nil,
@@ -157,15 +182,15 @@ public final class BridgeServer: @unchecked Sendable {
                     continue
                 }
 
-                // Handle client in an async Task so clientFd lifecycle is completely contained
-                Task {
-                    await self.handleClientAsync(fd: clientFd)
+                // The fd lives entirely inside handleClient and is closed when it returns
+                self.clientQueue.async {
+                    self.handleClient(fd: clientFd)
                 }
             }
         }
     }
 
-    private func handleClientAsync(fd: Int32) async {
+    private func handleClient(fd: Int32) {
         // K1 & K6 fix: file descriptor is kept open for the ENTIRE duration of client handling
         // and closed ONLY when the connection terminates.
         defer {
@@ -226,9 +251,8 @@ public final class BridgeServer: @unchecked Sendable {
                 continue
             }
 
-            // Await delegate response before writing back!
-            let response = await self.delegate?.handleBridgeMessage(message)
-                ?? BridgeResponse(id: message.id, ok: true)
+            // Wait for the delegate before writing back
+            let response = awaitDelegateResponse(for: message)
 
             guard let resData = try? JSONEncoder().encode(response) else {
                 break
@@ -239,6 +263,20 @@ public final class BridgeServer: @unchecked Sendable {
                 break
             }
         }
+    }
+
+    /// Runs the async delegate and blocks this GCD client thread until it answers.
+    /// No delegate means nobody accepted the message, so the browser must keep the download.
+    private func awaitDelegateResponse(for message: BridgeMessage) -> BridgeResponse {
+        let box = ResponseBox()
+        let semaphore = DispatchSemaphore(value: 0)
+        let delegate = self.delegate
+        Task {
+            box.value = await delegate?.handleBridgeMessage(message)
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return box.value ?? BridgeResponse(id: message.id, ok: false, reason: "Kodiz yanıt vermedi")
     }
 
     private func validateMessageInput(_ message: BridgeMessage) -> String? {
@@ -294,4 +332,8 @@ public final class BridgeServer: @unchecked Sendable {
             return true
         }
     }
+}
+
+private final class ResponseBox: @unchecked Sendable {
+    var value: BridgeResponse?
 }
